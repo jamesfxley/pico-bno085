@@ -1,0 +1,30 @@
+# Example and harness overrides layered on the root .clang-tidy.
+#
+# The house standard allows example and bench firmware what library code is not:
+# printf, varargs, and file-scope state. An on-device harness talks to a host
+# over a serial console and is driven by callbacks the SDK gives no context
+# argument to, so both are how it is written rather than a shortcut in it.
+#
+# The last two mirror src/.clang-tidy: a header's diagnostics follow the
+# configuration of the translation unit that includes it, so pico-sh2's
+# exemptions have to be restated wherever its headers are included. Every entry
+# is one that actually fires here.
+InheritParentConfig: true
+
+Checks: >
+  -cppcoreguidelines-pro-type-vararg,
+  -cppcoreguidelines-avoid-non-const-global-variables,
+  -readability-magic-numbers,
+
+# cppcoreguidelines-pro-type-vararg: printf is the console. The alternative is a
+# formatting layer in an image whose whole purpose is to report numbers.
+#
+# cppcoreguidelines-avoid-non-const-global-variables: the transports, the
+# selected bus and the run state are reached from callbacks the SDK invokes with
+# no context pointer, and they are static so that selecting a bus allocates
+# nothing (AR-1).
+#
+# readability-magic-numbers: the harness's literal sizes, intervals and counts
+# are its parameters rather than constants shared with anything else, and it
+# includes pico-sh2's transcribed wire format.
+#

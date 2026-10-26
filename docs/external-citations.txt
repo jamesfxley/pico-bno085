@@ -1,0 +1,7 @@
+# External requirement prefixes checked by review (EN-02.8).
+# Each row names the prefix, defining repository and reason for the citation.
+# Review uses that dependency's declared pin in CMakeLists.txt.
+
+SR  pico-sh2  session state this driver drives: reset recovery (SR-5) and host-requested reset (SR-7)
+FR  pico-util  the Result contract this driver publishes through: [[nodiscard]] at class scope (FR-6)
+CR  pico-util  CR-2: non-preemptible seqlock writer and interrupt-safe value publication

@@ -1,0 +1,11 @@
+# Layered on tests/.clang-tidy, which already disables
+# readability-magic-numbers for everything beneath it. Only what fires in this
+# directory is listed.
+InheritParentConfig: true
+
+Checks: >
+  -cppcoreguidelines-pro-bounds-pointer-arithmetic
+
+# cppcoreguidelines-pro-bounds-pointer-arithmetic: a test that checks a wire
+# frame walks it by offset from its start, which is the arithmetic the
+# assertion is about.

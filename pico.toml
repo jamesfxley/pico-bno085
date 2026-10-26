@@ -1,0 +1,16 @@
+name = "pico-bno085"
+
+[infra]
+repository = "https://github.com/jamesfxley/pico-tooling.git"
+
+[[footprint]]
+name = "minimal"
+elf = "build-firmware/examples/minimal/pico_bno085_minimal.elf"
+ram_kib = 20
+flash_kib = 128
+
+[[footprint]]
+name = "bench"
+elf = "build-firmware/examples/bench/pico_bno085_bench.elf"
+ram_kib = 20
+flash_kib = 128

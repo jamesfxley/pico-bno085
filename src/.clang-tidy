@@ -1,0 +1,20 @@
+# Library-tree overrides layered on the root .clang-tidy (which is symlinked
+# into the pico-tooling submodule and shared across the pico-* repos).
+#
+# Diagnostics raised inside a header are governed by the configuration of the
+# translation unit that includes it, not by the config next to the header. So
+# an exemption pico-sh2 carries for its own tree has to be restated here for its
+# headers to be quiet when this repo's sources include them. Every entry below
+# is one that actually fires: a rule disabled where it reports nothing is silent
+# coverage loss for every file added later, not an exemption.
+InheritParentConfig: true
+
+Checks: >
+  -readability-magic-numbers
+
+# readability-magic-numbers: the numbers are the datasheet's and the protocol
+# manuals'. Pin assignments, register values, wire lengths, field offsets and Q
+# points are each cited to the document and section that defines them; naming
+# every one would add a layer between the code and the document it has to be
+# checked against. Reaches pico-sh2's transcribed wire format through the
+# headers this tree includes.

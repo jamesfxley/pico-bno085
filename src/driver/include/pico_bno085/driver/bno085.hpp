@@ -534,8 +534,8 @@ class Bno085 {
     // Drop a desired entry by sensor; no-op if absent.
     void erase_desired(pico_sh2::reports::SensorId sensor);
 
-    // Enqueue the next batch of desired sensors to the session, resuming from
-    // the re-apply cursor. Enqueues stop at the first full TX queue (BR-2); the
+    // Enqueue the desired sensors still marked pending to the session, in
+    // table order. Enqueues stop at the first full TX queue (BR-2); the
     // next service() flushes the queue and resumes, so re-applying more sensors
     // than the queue depth spreads across service() calls.
     void pump_reapply();
@@ -555,11 +555,10 @@ class Bno085 {
     /// One desired sensor: the configuration, and whether it still has to be
     /// sent in the current re-apply pass.
     ///
-    /// The flag replaces an index cursor over the table. A cursor was only
-    /// correct while nothing was erased mid-pass, and disable_sensor() can be
-    /// called between service() calls -- with dense storage that moved an
-    /// unvisited entry behind the cursor and it was never re-sent. Per-entry,
-    /// the question is asked of the entry rather than of its position.
+    /// The flag is per entry, not an index into the table: an index is only
+    /// correct while the table does not change mid-pass, and enable_sensor()
+    /// and disable_sensor() can be called between service() calls. The flag
+    /// asks the question of the entry rather than of its position.
     struct Desired {
         pico_sh2::FeatureConfig config{};
         bool pending = false;

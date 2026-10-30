@@ -540,8 +540,8 @@ class Bno085 {
     // than the queue depth spreads across service() calls.
     void pump_reapply();
 
-    // Schedule a (re)apply of every desired sensor from the start on subsequent
-    // service() calls. Set Feature is idempotent, so re-sending an already-
+    // Mark every desired sensor pending, so subsequent service() calls
+    // (re)apply each one. Set Feature is idempotent, so re-sending an already-
     // applied sensor is harmless. Used when an immediate send is refused by a
     // full TX queue so the recorded desire still reaches the hub.
     void schedule_reapply();

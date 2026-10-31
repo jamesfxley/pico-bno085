@@ -32,7 +32,7 @@ and the policy the protocol layer deliberately leaves to a consumer.
       └───────────────────────────┘
                    │
         split_read.hpp, edge_latch.hpp,             hal/
-        detail/strap_plan.hpp
+        detail/strap_plan.hpp, detail/pin_mux.hpp
         (no SDK — host-tested)
 
         tracing_transport.hpp                      testing
@@ -67,6 +67,11 @@ builds on host:
   in (HR-3), as data: NRST asserted first, then PS1, PS0 and BOOTN, and SA0
   only for I2C. `ControlPins::init()` drives those steps and nothing else, so
   the order is tested on the host rather than only on a wired board.
+- **`detail::pin_mux`** is the RP2350 function-mux rules (datasheet Table 677)
+  as predicates: which GPIO can carry I2C SDA or SCL, or SPI RX, SCK or TX, for
+  a given instance and bank size. Each transport's `init()` refuses a pin they
+  reject, before any pin is touched, and `pins.hpp` binds its default pins to
+  them by `static_assert`.
 
 **`pico_bno085::hal`** (`src/hal/rp2350/`) is firmware-only and holds what
 genuinely needs the SDK: the I2C and SPI peripherals, GPIO, and the timer. It
@@ -156,10 +161,12 @@ the bench arms once the session is constructed, which is what `b-heap` gates on.
 control lines (HINTN, NRST, PS0, PS1, BOOTN, SA0) in `ControlConfig`, and the
 bus pins and peripheral instance in its transport's own `Config`.
 
-Nothing checks a consumer's pins. The `static_assert` in `pins.hpp` binds only
-its own `PIN_I2C_*` defaults to the I2C instance their pad numbers can reach —
-the RP2350's mux fixes each instance to pin numbers of a particular residue —
-and a transport's `Config` pins go to the SDK unchecked, on either bus.
+The `static_assert`s in `pins.hpp` bind its own I2C and SPI defaults to the
+instance their pad numbers can reach — the RP2350's mux fixes each instance to
+pin numbers of a particular residue. A transport's `Config` pins are checked at
+run time by `init()` against the same rules (`detail::pin_mux`), which refuses
+a pin the selected peripheral cannot reach or a GPIO outside bank 0 with
+`INVALID_ARGUMENT`.
 
 ## Selecting a bus, and why it is not hot-switching
 

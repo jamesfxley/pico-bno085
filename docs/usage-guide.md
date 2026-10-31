@@ -54,10 +54,9 @@ is held low.
 Three chip pins carry a different function per bus, which constrains the loom:
 
 - **Pins 19 and 20** need two Pico GPIOs each, because no RP2350 pin can be both
-  an I2C clock and a SPI clock. The residue rules that follow are UNCONFIRMED
-  until checked against the Raspberry Pi datasheet, as `pins.hpp` marks them:
-  I2C SCL is only available on odd-numbered GPIOs and SPI SCK only on GPIOs
-  ≡ 2 (mod 4). The I2C pair is further constrained to
+  an I2C clock and a SPI clock. The RP2350 datasheet (Table 677) fixes the
+  residue rules: I2C SCL is only available on odd-numbered GPIOs and SPI SCK
+  only on GPIOs ≡ 2 (mod 4). The I2C pair is further constrained to
   one peripheral — i2c0 reaches SDA on GPIOs ≡ 0 (mod 4) and SCL on ≡ 1, i2c1
   SDA on ≡ 2 and SCL on ≡ 3 — so GP2/GP3 select i2c1, which
   [pins.hpp](../src/hal/rp2350/include/pico_bno085/hal/pins.hpp) binds by
@@ -207,5 +206,11 @@ not search for ports or hand the run to another interpreter. The
 See [examples/bench/baselines/README.md](../examples/bench/baselines/README.md)
 for the promoted-result format and the conditions to record with each run.
 
-The RP2350 pin-mux residue assumptions in `pins.hpp` are UNCONFIRMED
-until checked against the Raspberry Pi datasheet.
+The RP2350 pin-mux rules (datasheet Table 677) are checked in code. For I2C the
+peripheral is (GPIO / 2) % 2, SDA on even GPIOs and SCL on odd ones. For SPI the
+peripheral is (GPIO / 8) % 2, and GPIO % 4 selects RX (MISO) 0, SCK 2 or TX
+(MOSI) 3; CSN is driven as a plain GPIO and may be any GPIO of bank 0. GPIOs 30
+to 47 exist on the 80-pin package only. `pins.hpp` binds its defaults to these
+rules by `static_assert`, and each transport's `init()` returns
+`INVALID_ARGUMENT`, before any pin is touched, for a pin the selected
+peripheral cannot reach or a GPIO outside bank 0.

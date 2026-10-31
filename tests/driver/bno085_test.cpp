@@ -817,7 +817,7 @@ TEST(Bno085, WakeOptionReachesTheHubInTheSetFeature) {
 }
 
 // A restart using the executable-channel command; calibration survival is
-// UNCONFIRMED.
+// UNCONFIRMED (FW-2).
 //
 // The whole re-handshake is drained inside one service() here, so the session
 // never appears not-ready to the driver. Keying the re-apply on that edge alone

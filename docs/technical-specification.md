@@ -17,17 +17,18 @@ results live in [examples/bench/baselines/](../examples/bench/baselines/).
 
 | | |
 |---|---|
-| Hardware target | An RP2350 board. This repository builds for `pico2_w`, and the bench runs on a Pico 2 W; as a dependency the consumer's RP2350 board is taken as given, and running on a plain Pico 2 is UNCONFIRMED. The BNO085 is wired per [usage-guide.md](usage-guide.md). BNO086 is supported by the same code (its zero-length-packet polling behaviour is tolerated). |
+| Hardware target | An RP2350 board. This repository builds for `pico2_w`, and the bench runs on a Pico 2 W; as a dependency the consumer's RP2350 board is taken as given, and running on a plain Pico 2 is UNCONFIRMED (FW-1). The BNO085 is wired per [usage-guide.md](usage-guide.md). The BNO086 is not validated: the code tolerates its zero-length-packet polling behaviour, but support for the part is UNCONFIRMED (FW-2). |
 | Transports | I2C (≤400 kHz) and SPI (mode 3, ≤3 MHz), selected in firmware via the PS0/PS1 pins driven before reset. |
 | Protocol | SH-2 over SHTP, via the `pico-sh2` dependency. |
-| Out of scope | UART-RVC / UART-SHTP modes; DFU / bootloader firmware update; the SH-2 protocol logic itself (specified in pico-sh2). |
+| Out of scope | UART-RVC / UART-SHTP modes (FW-5); DFU / bootloader firmware update; the SH-2 protocol logic itself (specified in pico-sh2). |
 
 Sizing follows the `PICO_BNO085_PROFILE` option (`default` / `large`), which
 forwards to `PICO_SH2_PROFILE`.
 
 **API stability:** the public API (`namespace pico_bno085`, headers under
-`pico_bno085/`) follows semantic versioning; breaking changes only at a major
-version.
+`pico_bno085/`) follows semantic versioning (`EN-06.1`): a breaking change lands at a minor
+version bump while the major version is 0, and at a major version bump from
+1.0.
 
 ---
 
@@ -51,8 +52,8 @@ version.
 
   The 64-bit timestamp is published under a seqlock, so a `service()`-context
   reader never observes a value torn across the two 32-bit stores the M33
-  emits. The fences are full thread fences, not signal fences, so the
-  publication stays correct if the reader ever moves to the second core.
+  emits. The fences are full thread fences, not signal fences; no cross-core
+  guarantee is stated for the rest (FW-3).
 
   A read is anchored to the edge read in the same step that clears the flag, and
   the transport returns it with the transfer. `data_ready()` can see HINTN
@@ -88,7 +89,7 @@ version.
   sink and level atomics need the RP2350's exclusive access, so the driver
   declares `PLATFORM rp2350` to pico-tooling's bootstrap, which refuses a board
   without what a library declares. A consumer adding it on an RP2040 board fails
-  at configure, naming the platform.
+  at configure, naming the platform (FW-1).
 
 ## 3. Hardware requirements (HR)
 
@@ -111,8 +112,8 @@ version.
   follows its header without re-checking the level: 1000-3535 §2.5 says
   "Reading cargoes may only begin after the Sensor Hub asserts the host
   interrupt signal", and whether a continuation issued before the hub
-  reasserts complies is UNCONFIRMED; a BNO085 not ready for it stretches the
-  clock, which HR-2's timeout bounds. An edge can outlive
+  reasserts complies is UNCONFIRMED (FW-2); a BNO085 not ready for it
+  stretches the clock, which HR-2's timeout bounds. An edge can outlive
   its assertion: a handler held off past the read that answered it runs after
   it. The handler therefore drops an edge whose line has already risen, and a
   transport drops an assertion that a transfer it performed answered: a split
@@ -197,7 +198,7 @@ version.
   The anchor is a separate question from the measurement. A read served by the
   level fallback may anchor its events to an earlier edge (HR-1). A read that answers a retried assertion anchors to the retry's edge;
   whether the hub re-takes the cargo's base delta against the retry is
-  UNCONFIRMED (1000-3927 §1.2.4.1 says only that it deasserts and retries).
+  UNCONFIRMED (FW-2; 1000-3927 §1.2.4.1 says only that it deasserts and retries).
 - **HR-6 — I2C split reads are invisible above the HAL.** The I2C transport
   retrieves a cargo by reading the 4-byte header to learn its length and then
   reading the cargo itself, the split read SHTP defines for a host that does not
@@ -258,7 +259,7 @@ alike.
   (1000-3625 §7.2.1 and 1000-3927 §1.3.5.3, Figure 1-36 worked example;
   the latter's prose disagrees with the example on the delay sign). Each field
   puts the time off by less than one
-  tick, whether the hub truncates or rounds (UNCONFIRMED), so a time is off by
+  tick, whether the hub truncates or rounds (UNCONFIRMED, FW-2), so a time is off by
   less than two ticks and two times built separately differ by less than four.
   The reconstruction bound is therefore 400 µs: a backward step of 400 µs or
   more is a reconstruction fault and fails the gate, and anything smaller is
@@ -270,7 +271,7 @@ alike.
   fused report is timed from, nor that a rotation vector and the gyroscope
   delivered at one rate share a sample phase, and 1000-3625 §5.2 allows a
   report rate synchronous or asynchronous to the sensor's operating rate
-  (UNCONFIRMED in the documents). PR-3 therefore gates no phase between the two
+  (UNCONFIRMED in the documents, FW-2). PR-3 therefore gates no phase between the two
   streams. `b-rvphase` records the phase: it reports each rotation-vector
   time's offset from the nearest gyroscope time, which shows only modulo the
   interval, and passes when both are delivered at one rate over an interval of

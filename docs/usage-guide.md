@@ -54,8 +54,10 @@ is held low.
 Three chip pins carry a different function per bus, which constrains the loom:
 
 - **Pins 19 and 20** need two Pico GPIOs each, because no RP2350 pin can be both
-  an I2C clock and a SPI clock: I2C SCL is only available on odd-numbered GPIOs
-  and SPI SCK only on GPIOs ≡ 2 (mod 4). The I2C pair is further constrained to
+  an I2C clock and a SPI clock. The residue rules that follow are UNCONFIRMED
+  until checked against the Raspberry Pi datasheet, as `pins.hpp` marks them:
+  I2C SCL is only available on odd-numbered GPIOs and SPI SCK only on GPIOs
+  ≡ 2 (mod 4). The I2C pair is further constrained to
   one peripheral — i2c0 reaches SDA on GPIOs ≡ 0 (mod 4) and SCL on ≡ 1, i2c1
   SDA on ≡ 2 and SCL on ≡ 3 — so GP2/GP3 select i2c1, which
   [pins.hpp](../src/hal/rp2350/include/pico_bno085/hal/pins.hpp) binds by
@@ -120,7 +122,7 @@ firmware polls it at reset.
 | 1 | 1 | SPI |
 
 The 0/1 and 1/0 combinations select the UART modes, which are out of scope for
-this driver. In SPI mode both pins must be high from before reset until after
+this driver (FW-5). In SPI mode both pins must be high from before reset until after
 the first H_INTN assertion, after which PS0 becomes the active-low WAKE line.
 
 ## Startup

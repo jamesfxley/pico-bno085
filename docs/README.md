@@ -7,6 +7,7 @@
 | [technical-specification.md](technical-specification.md) | **Normative.** Requirement IDs (`AR`/`HR`/`PR`/`BR`/`TR`/`OR`), their pass criteria, and the traceability matrix | Deciding whether a behaviour is required or incidental, or changing one |
 | [architecture.md](architecture.md) | Descriptive. How the implementation is put together — the driver façade, the HAL split, the transports | Working out where a change belongs |
 | [usage-guide.md](usage-guide.md) | Practical use: wiring, bus selection, first run on a board | Bringing a part up for the first time |
+| [future-work.md](future-work.md) | What is deliberately not built, and why | Asking why something is absent, or proposing it |
 | [deviations.md](deviations.md) | Standing (scope-wide) deviations from the coding standard, each with a rationale, a risk assessment and a review date | Adding or reviewing a suppression |
 | [deviation-budget.txt](deviation-budget.txt) | One suppression ceiling per language, ratcheting down. These only ever ratchet down | Same |
 | [requirement-prefixes.txt](requirement-prefixes.txt) | The pinned prefix set, checked by review (EN-02.4) | Adding a requirement under a new prefix |
@@ -15,8 +16,8 @@
 | [GitHub Releases](https://github.com/jamesfxley/pico-bno085/releases) | What changed in each release, and what to change in your code when an API broke | Upgrading across a release |
 
 The specification is the only normative document here. `architecture.md`
-describes what is, and work deliberately not done is an issue in the tracker
-rather than a document in the tree (`EN-03.7`).
+describes what is, and work deliberately not done is an entry in
+[future-work.md](future-work.md) (`EN-03.7`); the issue tracker holds defects.
 
 A behaviour claimed in `README.md` or `docs/orientation.md` but absent from the
 specification is not a commitment, and a requirement is not satisfied until the

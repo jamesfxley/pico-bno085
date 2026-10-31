@@ -477,7 +477,8 @@ class Bno085 {
     /// recovery.
     ///
     /// This discards the dynamic calibration the hub has accumulated. To
-    /// restart the hub, use reset(); calibration survival is UNCONFIRMED.
+    /// restart the hub, use reset(); calibration survival is UNCONFIRMED
+    /// (FW-2).
     Result<void> clear_dcd_and_reset();
 
     /// Restart the hub using the executable-channel reset (1000-3600 §2.2). The

@@ -138,10 +138,11 @@ class EdgeLatch {
         //
         // Relaxed: the handler is the only writer of both, and it is not
         // preemptible by the service context that reads them, so there is no
-        // ordering for this load to establish. A reader on the other core can
-        // see a span start whose span a concurrent consume() has just ended,
-        // which over-reports the gap. Over-reporting is the safe direction for
-        // a gate -- it cannot turn a missed budget into a passing one.
+        // ordering for this load to establish. A reader on the other core
+        // (FW-3) can see a span start whose span a concurrent consume() has
+        // just ended, which over-reports the gap. Over-reporting is the safe
+        // direction for a gate -- it cannot turn a missed budget into a passing
+        // one.
         if (!flag_.load(std::memory_order_relaxed)) {
             pending_since_.store(edge_us);
         }

@@ -507,7 +507,8 @@ def case_boot(dev, _cfg):
     # Nothing else streaming, so boot is measured against a quiet bus rather
     # than whatever an earlier test left enabled.
     isolate(dev)
-    # Use the executable-channel reset. Calibration survival is UNCONFIRMED.
+    # Use the executable-channel reset. Calibration survival is UNCONFIRMED
+    # (FW-2).
     dev.send("reset")
     start = time.monotonic()
     ready = dev.wait_for("# ready", READY_TIMEOUT_S)
@@ -602,8 +603,8 @@ def case_rvphase(dev, cfg):
 
     1000-3927 section 6.8 has fused outputs follow a gyroscope sample, but
     neither it nor 1000-3625 says which interrupt a fused report is timed from
-    or that the two streams at one rate share a sample phase, so PR-3 gates no
-    phase. The case passes when the measurement is valid: both streams
+    or that the two streams at one rate share a sample phase (FW-2), so PR-3
+    gates no phase. The case passes when the measurement is valid: both streams
     delivered at one rate inside the granted band, with an interval long
     enough to separate the sample grid from the bound. Pairing by nearest time
     sees an offset only modulo the interval, so which sample an RV carries is

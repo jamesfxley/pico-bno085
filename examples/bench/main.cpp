@@ -387,7 +387,8 @@ bool handle_bare_command(pico_bno085::Bno085& imu, std::string_view line) {
                static_cast<unsigned long>(g_heap.growth_bytes()));
     } else if (line == "reset") {
         // Restart via the executable channel; calibration survival is
-        // UNCONFIRMED. This is what a boot or recovery measurement wants.
+        // UNCONFIRMED (FW-2). This is what a boot or recovery measurement
+        // wants.
         report(imu.reset().ok(), "reset");
     } else if (line == "cleardcd") {
         report(imu.clear_dcd_and_reset().ok(), "cleardcd");

@@ -113,12 +113,16 @@ protocol, and what to do after a hub reset is a decision, not a protocol rule.
 `Bno085` makes that decision.
 
 It keeps a **desired-sensor table**, and re-applies every entry when the
-session reaches READY — after startup and after any hub reset. The re-apply
-runs from a cursor that resumes across `service()` calls, because the table can
-hold more sensors than the transmit queue has slots, and it is keyed on a reset
-being outstanding rather than only on the edge into READY: a reset whose whole
-re-handshake drains inside one `service()` shows no edge, and keying on the
-edge alone would leave the hub streaming nothing while the table said
+session reaches READY — after startup and after any hub reset. The table can
+hold more sensors than the transmit queue has slots, so a pass can span several
+`service()` calls. Each entry carries a pending flag, set when a pass is
+scheduled and cleared when the entry is sent, and the next call resumes with
+the entries still pending. The flag belongs to the entry rather than to a
+position in the table, so an `enable_sensor()` or `disable_sensor()` between
+calls cannot drop an unsent entry from the pass. The re-apply is keyed on a
+reset being outstanding rather than only on the edge into READY: a reset whose
+whole re-handshake drains inside one `service()` shows no edge, and keying on
+the edge alone would leave the hub streaming nothing while the table said
 otherwise.
 
 `enable_sensor` distinguishes **applied from deferred**, because "recorded, and

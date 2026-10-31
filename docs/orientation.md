@@ -117,9 +117,9 @@ common rules. The [family routes](../infra/agents/AGENTS.md) name the guides.
   jumper moved.
 - Queue-full is recoverable (BR-2): a refused enable schedules a re-apply, a
   refused disable keeps its desired entry.
-- Sensor re-enable after a hub reset (AR-3) runs from a cursor that resumes
-  across `service()` calls, because the TX queue is shallower than the sensor
-  table.
+- Sensor re-enable after a hub reset (AR-3) resumes across `service()` calls
+  from per-entry pending flags, because the TX queue is shallower than the
+  sensor table.
 - **The façade answers in `pico_bno085::Error`, the transports in
   `pico_sh2::Sh2Error`** (AR-4). `from_sh2()` maps at the boundary, collapsing
   the four framing codes onto `PROTOCOL` and both capacity codes onto

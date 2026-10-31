@@ -2,6 +2,7 @@
 #include "pico_bno085/hal/i2c_hal_transport.hpp"
 
 #include <hardware/i2c.h>
+#include <hardware/platform_defs.h>
 #include <hardware/structs/io_bank0.h>
 #include <pico/error.h>
 
@@ -12,6 +13,7 @@
 #include <utility>
 
 #include "hardware/gpio.h"
+#include "pico_bno085/hal/detail/pin_mux.hpp"
 #include "pico_bno085/hal/pins.hpp"
 #include "pico_bno085/hal/split_read.hpp"
 #include "pico_sh2/sh2/hal_transport.hpp"
@@ -57,6 +59,15 @@ pico_sh2::Result<void> I2cHalTransport::init() {
     // The hub's limit, not a preference (1000-3927 §6.5.1), so a faster clock
     // is refused before any pin is touched (HR-4).
     if (config_.baud_hz > I2C_MAX_BAUD_HZ) {
+        return pico_sh2::Sh2Error::INVALID_ARGUMENT;
+    }
+    // A pad the peripheral cannot reach would be configured and then silently
+    // carry nothing, so a pin the mux does not route to this instance, or one
+    // outside bank 0, is refused before any pin is touched (HR-4).
+    constexpr detail::MuxBounds BOUNDS{.gpio_count = NUM_BANK0_GPIOS};
+    const std::uint32_t index = i2c_get_index(config_.instance);
+    if (!detail::i2c_sda(config_.sda_pin, index, BOUNDS) ||
+        !detail::i2c_scl(config_.scl_pin, index, BOUNDS)) {
         return pico_sh2::Sh2Error::INVALID_ARGUMENT;
     }
     // Straps and NRST first, hub held in reset until the session releases it.

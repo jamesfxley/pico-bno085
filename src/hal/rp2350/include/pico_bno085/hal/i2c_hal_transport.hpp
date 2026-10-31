@@ -58,10 +58,12 @@ class I2cHalTransport final : public pico_sh2::IHalTransport {
     /// the HINTN interrupt. Call before Bno085::begin().
     ///
     /// \return INVALID_ARGUMENT, before any pin is touched, if `baud_hz` is
-    ///         above the hub's limit, or once the peripheral is released again
-    ///         if the rate the SDK actually sets is (HR-4); otherwise failure
-    ///         only if the interrupt dispatch table is full, which is a wiring
-    ///         mistake rather than a runtime condition.
+    ///         above the hub's limit, or if SDA or SCL is not a pin
+    ///         the selected peripheral can reach (RP2350 datasheet, Table 677),
+    ///         or either pin is outside bank 0, or once the peripheral is
+    ///         released again if the rate the SDK actually sets is (HR-4);
+    ///         otherwise failure only if the interrupt dispatch table is full,
+    ///         which is a wiring mistake rather than a runtime condition.
     pico_sh2::Result<void> init();
 
     /// Whether the hub has a transfer waiting: HINTN asserted (HR-1).

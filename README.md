@@ -2,11 +2,12 @@
 
 [![CI](https://github.com/jamesfxley/pico-bno085/actions/workflows/ci.yml/badge.svg)](https://github.com/jamesfxley/pico-bno085/actions/workflows/ci.yml)
 
-`pico-bno085` is a C++20 driver for the Bosch/CEVA **BNO085** (and pin-compatible
-**BNO086**) IMU on RP2350 boards, built and benched on a Pico 2 W. It drives the
-sensor over I2C or SPI, owns the board-specific pins, reset, and HINTN interrupt
-handling, and presents a small callback-based API for enabling sensors and
-receiving typed, unit-converted events.
+`pico-bno085` is a C++20 driver for the Bosch/CEVA **BNO085** IMU on RP2350
+boards (FW-1), built and benched on a Pico 2 W. The pin-compatible **BNO086** is
+not validated: its support is UNCONFIRMED (FW-2). It drives the sensor over
+I2C or SPI, owns the board-specific pins, reset, and HINTN interrupt handling,
+and presents a small callback-based API for enabling sensors and receiving
+typed, unit-converted events.
 
 The SH-2 protocol and its SHTP transport live in a separate, platform-independent
 library, [pico-sh2](https://github.com/jamesfxley/pico-sh2); this repository
@@ -88,6 +89,7 @@ supports I2C and SPI with no jumper moved.
   pico-sh2, and where a change belongs
 - [Usage guide](docs/usage-guide.md) — wiring, bus selection, first run on a
   board
+- [Future work](docs/future-work.md) — what is deliberately not built, and why
 - [Standing deviations](docs/deviations.md) — scope-wide rule suppressions and
   their review dates
 - [Orientation](docs/orientation.md) — how the repository is laid out, and the
@@ -102,9 +104,11 @@ captured under live with the benchmark:
 
 ## Releases
 
-Versioning is semver: breaking changes only at a major version. The notes on
-each [release](https://github.com/jamesfxley/pico-bno085/releases) record what
-changed and, for a break, what to change in your own code (`EN-06.3`).
+Versioning is semver (`EN-06.1`): a breaking change lands at a minor version
+bump while the major version is 0, and at a major version bump from 1.0. The
+notes on each [release](https://github.com/jamesfxley/pico-bno085/releases)
+record what changed and, for a break, what to change in your own code
+(`EN-06.3`).
 
 ## AI-assisted development
 

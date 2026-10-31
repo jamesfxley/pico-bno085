@@ -1,9 +1,10 @@
 # pico-bno085
 
-C++20 driver for the Bosch/CEVA **BNO085**/BNO086 IMU on RP2350 boards (the
-specification's Hardware target row says which are validated). Owns the board-specific pins, reset, and HINTN interrupt
-handling over I2C or SPI, and presents a callback API for enabling sensors and
-receiving typed events. The SH-2/SHTP protocol layer lives in the sibling
+C++20 driver for the Bosch/CEVA **BNO085** IMU on RP2350 boards (FW-1); the
+BNO086 is not validated (FW-2). The specification's Hardware target row says
+which boards are validated. Owns the board-specific pins, reset, and HINTN
+interrupt handling over I2C or SPI, and presents a callback API for enabling
+sensors and receiving typed events. The SH-2/SHTP protocol layer lives in the sibling
 library pico-sh2; this repo implements its `IHalTransport` seam.
 
 Orientation for anyone working in this repository: how to build and gate it,

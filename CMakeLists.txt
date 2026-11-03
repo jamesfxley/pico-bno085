@@ -6,7 +6,7 @@ include(cmake/pico_family_bootstrap.cmake)
 # dependency the board is the consumer's, and only that is checked of it.
 pico_family_bootstrap(PICO_BNO085 PLATFORM rp2350)
 
-project(pico_bno085 VERSION 0.1.0 LANGUAGES C CXX ASM)
+project(pico_bno085 VERSION 0.1.1 LANGUAGES C CXX ASM)
 
 house_cxx_common_settings(${PICO_BNO085_BUILD_FIRMWARE})
 pico_family_init_sdk(${PICO_BNO085_BUILD_FIRMWARE})

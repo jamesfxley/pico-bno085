@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: MIT
 #include "pico_bno085/hal/spi_hal_transport.hpp"
 
+#include <hardware/platform_defs.h>
 #include <hardware/spi.h>
 #include <hardware/structs/io_bank0.h>
 
@@ -10,6 +11,7 @@
 #include <span>
 
 #include "hardware/gpio.h"
+#include "pico_bno085/hal/detail/pin_mux.hpp"
 #include "pico_bno085/hal/duplex_write.hpp"
 #include "pico_bno085/hal/pins.hpp"
 #include "pico_sh2/sh2/hal_transport.hpp"
@@ -50,6 +52,18 @@ pico_sh2::Result<void> SpiHalTransport::init() {
     // The hub's limit, not a preference (1000-3927 §6.5.2), so a faster clock
     // is refused before any pin is touched (HR-4).
     if (config_.baud_hz > SPI_MAX_BAUD_HZ) {
+        return pico_sh2::Sh2Error::INVALID_ARGUMENT;
+    }
+    // A pad the peripheral cannot reach would be configured and then silently
+    // carry nothing, so a pin the mux does not route to this instance, or one
+    // outside bank 0, is refused before any pin is touched (HR-4). CSN is a
+    // plain GPIO, so it needs only the bank bound.
+    constexpr detail::MuxBounds BOUNDS{.gpio_count = NUM_BANK0_GPIOS};
+    const std::uint32_t index = spi_get_index(config_.instance);
+    if (!detail::spi_rx(config_.miso_pin, index, BOUNDS) ||
+        !detail::spi_sck(config_.sck_pin, index, BOUNDS) ||
+        !detail::spi_tx(config_.mosi_pin, index, BOUNDS) ||
+        !detail::in_bank(config_.csn_pin, BOUNDS)) {
         return pico_sh2::Sh2Error::INVALID_ARGUMENT;
     }
     // Straps and NRST first (PS1:PS0 = 1:1 selects SPI), hub held in reset.

@@ -5,6 +5,7 @@ house_cxx_add_module_test(pico_bno085 hal_core
     SOURCES
         duplex_write_test.cpp
         edge_latch_test.cpp
+        pin_mux_test.cpp
         split_read_test.cpp
         strap_plan_test.cpp
     LIBRARIES Threads::Threads

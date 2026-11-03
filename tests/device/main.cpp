@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: MIT
-// Device-only reset and shared-wiring bring-up paths (HR-3, AR-3).
+// Device-only reset and shared-wiring bring-up and pin refusal paths (HR-3,
+// AR-3, HR-4).
 #include <array>
 #include <charconv>
 #include <cstddef>
@@ -8,6 +9,12 @@
 #include <string_view>
 #include <system_error>
 
+#include "hardware/gpio.h"
+#include "hardware/i2c.h"
+#include "hardware/platform_defs.h"
+#include "hardware/regs/pads_bank0.h"
+#include "hardware/spi.h"
+#include "hardware/structs/pads_bank0.h"
 #include "hardware/timer.h"
 #include "pico/stdio.h"
 #include "pico/time.h"
@@ -18,6 +25,7 @@
 #include "pico_family/device_test.hpp"
 #include "pico_sh2/reports/sensor_event.hpp"
 #include "pico_sh2/reports/sensor_id.hpp"
+#include "pico_sh2/util/result.hpp"
 
 namespace {
 
@@ -109,6 +117,61 @@ bool default_boot(const DeviceState& state, Transport& transport,
     }
     transport.end();
     return initialized && ready;
+}
+
+struct PadState {
+    std::uint32_t function;
+    bool isolated;
+};
+
+PadState pad_state(std::uint32_t pin) {
+    return {
+        .function = static_cast<std::uint32_t>(gpio_get_function(pin)),
+        .isolated = (pads_bank0_hw->io[pin] & PADS_BANK0_GPIO0_ISO_BITS) != 0};
+}
+
+template <typename Transport, std::size_t N>
+void check_refusal(pico_family::device_test::Run& run, DeviceState& state,
+                   std::string_view name, Transport& transport,
+                   const std::array<std::uint32_t, N>& pins) {
+    std::array<PadState, N> before{};
+    for (std::size_t i = 0; i < N; ++i) {
+        if (pins.at(i) < NUM_BANK0_GPIOS) {
+            before.at(i) = pad_state(pins.at(i));
+        }
+    }
+    const auto result = transport.init();
+    auto& text = state.failure_text;
+    text = {};
+    bool passed =
+        !result.ok() && result.error() == pico_sh2::Sh2Error::INVALID_ARGUMENT;
+    if (!passed) {
+        text.field("init result=",
+                   result.ok() ? -1 : static_cast<int>(result.error()));
+    }
+    for (std::size_t i = 0; i < N; ++i) {
+        const auto pin = pins.at(i);
+        if (pin >= NUM_BANK0_GPIOS) {
+            continue;
+        }
+        const auto after = pad_state(pin);
+        if (after.function != before.at(i).function) {
+            text.field(" pin=", pin);
+            text.append(" function changed");
+            passed = false;
+        }
+        if (after.isolated != before.at(i).isolated) {
+            text.field(" pin=", pin);
+            text.append(" isolation changed");
+            passed = false;
+        }
+    }
+    if (result.ok()) {
+        transport.end();
+    }
+    run.check("HR-4", name, passed,
+              text.complete ? std::string_view(text.bytes.data(), text.size)
+                            : std::string_view("failure detail overflow"));
 }
 
 // The fixed labels, stage literals and bounded integer fields fit in 512 bytes.
@@ -217,5 +280,66 @@ int main() {
     state.i2c.end();
     run.check("AR-3", "hub-reset-restores-desired-sensor", restored,
               restored ? std::string_view{} : state.failure_detail);
+    using I2c = pico_bno085::hal::I2cHalTransport;
+    using Spi = pico_bno085::hal::SpiHalTransport;
+    const I2c::Config i2c{};
+    const auto& control = i2c.control;
+    auto i2c_swapped = i2c;
+    i2c_swapped.sda_pin = i2c.scl_pin;
+    i2c_swapped.scl_pin = i2c.sda_pin;
+    auto i2c_other = i2c;
+    i2c_other.instance = i2c.instance == i2c0 ? i2c1 : i2c0;
+    auto i2c_outside = i2c;
+    i2c_outside.sda_pin = NUM_BANK0_GPIOS;
+    static I2c swapped_i2c{i2c_swapped};
+    static I2c other_i2c{i2c_other};
+    static I2c outside_i2c{i2c_outside};
+    const std::array i2c_pins{
+        i2c.sda_pin,     i2c.scl_pin,     control.hintn_pin, control.nrst_pin,
+        control.ps0_pin, control.ps1_pin, control.bootn_pin, control.sa0_pin};
+    const std::array i2c_outside_pins{i2c_outside.sda_pin, i2c.scl_pin,
+                                      control.hintn_pin,   control.nrst_pin,
+                                      control.ps0_pin,     control.ps1_pin,
+                                      control.bootn_pin,   control.sa0_pin};
+    check_refusal(run, state, "i2c-refuses-swapped-sda-scl", swapped_i2c,
+                  i2c_pins);
+    check_refusal(run, state, "i2c-refuses-the-other-instance", other_i2c,
+                  i2c_pins);
+    check_refusal(run, state, "i2c-refuses-a-pin-outside-bank-0", outside_i2c,
+                  i2c_outside_pins);
+
+    const Spi::Config spi{};
+    auto spi_swapped = spi;
+    spi_swapped.miso_pin = spi.mosi_pin;
+    spi_swapped.mosi_pin = spi.miso_pin;
+    auto spi_other = spi;
+    spi_other.instance = spi.instance == spi0 ? spi1 : spi0;
+    auto spi_outside = spi;
+    spi_outside.csn_pin = NUM_BANK0_GPIOS;
+    static Spi swapped_spi{spi_swapped};
+    static Spi other_spi{spi_other};
+    static Spi outside_spi{spi_outside};
+    const auto& sc = spi.control;
+    const std::array spi_pins{
+        spi.miso_pin, spi.mosi_pin, spi.sck_pin, spi.csn_pin,  sc.hintn_pin,
+        sc.nrst_pin,  sc.ps0_pin,   sc.ps1_pin,  sc.bootn_pin, sc.sa0_pin};
+    const std::array spi_outside_pins{
+        spi.miso_pin, spi.mosi_pin, spi.sck_pin, spi_outside.csn_pin,
+        sc.hintn_pin, sc.nrst_pin,  sc.ps0_pin,  sc.ps1_pin,
+        sc.bootn_pin, sc.sa0_pin};
+    check_refusal(run, state, "spi-refuses-swapped-miso-mosi", swapped_spi,
+                  spi_pins);
+    check_refusal(run, state, "spi-refuses-the-other-instance", other_spi,
+                  spi_pins);
+    check_refusal(run, state, "spi-refuses-a-pin-outside-bank-0", outside_spi,
+                  spi_outside_pins);
+    const bool i2c_default_ready =
+        default_boot(state, state.i2c, state.i2c_imu);
+    run.check("HR-4", "i2c-accepts-the-default-pins", i2c_default_ready,
+              i2c_default_ready ? "" : "I2C init or READY failed");
+    const bool spi_default_ready =
+        default_boot(state, state.spi, state.spi_imu);
+    run.check("HR-4", "spi-accepts-the-default-pins", spi_default_ready,
+              spi_default_ready ? "" : "SPI init or READY failed");
     run.finish();
 }

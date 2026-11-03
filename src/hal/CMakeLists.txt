@@ -1,5 +1,6 @@
 # The protocol-level parts of the HAL that touch no SDK: the split-read
-# compensation, the transfer-code classification and the strap order. Header-only and built on
+# compensation, the transfer-code classification, the pin-mux rules and the strap
+# order. Header-only and built on
 # host as well as firmware, so the reasoning they carry is unit-tested rather
 # than only exercised on a wired board.
 add_library(pico_bno085_hal_core INTERFACE)
@@ -9,6 +10,7 @@ target_sources(pico_bno085_hal_core INTERFACE
     FILE_SET HEADERS
     BASE_DIRS ${CMAKE_CURRENT_SOURCE_DIR}/include
     FILES
+        include/pico_bno085/hal/detail/pin_mux.hpp
         include/pico_bno085/hal/detail/strap_plan.hpp
         include/pico_bno085/hal/duplex_write.hpp
         include/pico_bno085/hal/edge_latch.hpp

@@ -16,16 +16,17 @@ Pico 2 `UNCONFIRMED`.
 
 pico-logging's sink and level atomics need the RP2350's exclusive access, so
 the driver depends on a library that does not build for the RP2040. The
-RP2040's pin-mux residues are also unconfirmed until read from its datasheet,
-and a plain Pico 2 is unvalidated because the only bench board is a Pico 2 W.
+RP2040's pin-mux residues are unconfirmed until read from its datasheet (the
+RP2350's are confirmed and checked in code), and a plain Pico 2 is unvalidated
+because the only bench board is a Pico 2 W.
 
 ### What would have to be true to build it
 
 An RP2040 HAL over the SDK's I2C, SPI and GPIO interfaces, which are common to
 both chips; the RP2040 pin-mux residues confirmed from the datasheet; a bench
 run on a plain Pico 2; and, for the RP2040, pico-logging building for it
-(pico-logging:FW-1). The pin-mux residue work follows the fix of the pin-mux
-residue defect.
+(pico-logging:FW-1). The pin-mux predicates (`detail::pin_mux`) encode the
+RP2350's rules, so an RP2040 HAL needs its own residues beside them.
 
 ### Version cost
 

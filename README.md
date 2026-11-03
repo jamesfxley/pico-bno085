@@ -73,6 +73,9 @@ HOUSE_MATRIX_PROFILE=large selects the wider profile forwarded to pico-sh2.
 [Orientation](docs/orientation.md) lists local inputs and invariants; the
 [family build guide](infra/docs/build.md) owns shared commands. Source overrides
 are explicit; sibling checkouts are not discovered. Device runs are separate.
+`tests/device/` checks default-wiring bring-up on both buses and desired-sensor
+restoration after a hub reset, following the
+[pinned device convention](infra/guides/device.md#device-tests).
 
 ## Wiring
 

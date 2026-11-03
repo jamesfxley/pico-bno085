@@ -119,6 +119,10 @@ if(PICO_BNO085_ENABLE_EXAMPLES AND PICO_BNO085_BUILD_FIRMWARE)
     add_subdirectory(examples)
 endif()
 
+if(PROJECT_IS_TOP_LEVEL AND PICO_BNO085_BUILD_FIRMWARE)
+    add_subdirectory(tests/device)
+endif()
+
 if(PICO_BNO085_ENABLE_INSTALL)
     # pico_bno085_testing ships with the package. A downstream project writing
     # tests against this driver needs the same tracing decorator this

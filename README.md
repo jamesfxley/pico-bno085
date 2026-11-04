@@ -22,7 +22,7 @@ need real hardware.
 include(FetchContent)
 FetchContent_Declare(pico_bno085
     GIT_REPOSITORY https://github.com/jamesfxley/pico-bno085.git
-    GIT_TAG v0.1.0)  # pin the release you build against
+    GIT_TAG v0.1.1)  # pin the release you build against
 FetchContent_MakeAvailable(pico_bno085)
 
 target_link_libraries(app PRIVATE pico_bno085::core)

@@ -45,11 +45,17 @@ its
 100 Hz example concerns Game Rotation Vector. Within one run the order is safe:
 `b-rv400` runs before `b-girv`. It is the next run that inherits the state.
 
-## Pending publication runs
+## Records
 
-The full twelve-test SPI-session bench, including `b-soak`, awaits a new
-separately authorized run on each final staged profile, default and large.
-The run includes `b-rv400` with a mid-stream sensor reconfiguration and checks
-zero sequence gaps and reassembly drops. Capture the final image hash and
-all conditions before publishing a `pico2-v0.1-<profile>.json` record. No
-record on 0.1.0 is committed yet.
+| File | Profile | Started (UTC) | Image |
+|---|---|---|---|
+| `pico2-v0.1-default.json` | default | 2026-11-03 22:24 | pico-bno085 0.1.1, `272549a`; hash not recorded |
+| `pico2-v0.1-large.json` | large | 2026-11-03 23:27 | pico-bno085 0.1.1, `272549a`; bench image SHA-256 `7887a3f690653be8fc6b68158449f7a713f7c4c594e2843190c42ca53add57e1` |
+
+Both: Pico 2 W with a BNO085, wired per the usage guide; session bus SPI;
+firmware `CMAKE_BUILD_TYPE` Release, `PICO_PLATFORM` rp2350-arm-s, Pico SDK
+2.3.0, arm-none-eabi-gcc 14.2.1; started from a fresh flash of the bench
+image; all twelve cases, `b-soak` for 3600 s. Every case passed on both
+profiles. In `b-i2c100` sensor 0x01 delivered 126.9 Hz at the 100 Hz
+requested on both profiles; the gate passes it, and the cause is not
+established.

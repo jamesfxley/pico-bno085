@@ -1,0 +1,143 @@
+{
+  "timestamp": "2026-11-04T00:30:38+00:00",
+  "port": "/tmp/claude-1000/-workspaces/a645cf4a-57e8-40a5-83b8-e1924aa49e50/scratchpad/bench/bno-tty",
+  "bus": "spi",
+  "info": {
+    "tick_us": 100,
+    "max_enabled": 16,
+    "bus": "spi"
+  },
+  "results": [
+    {
+      "test": "b-boot",
+      "passed": true,
+      "boot_ms": 227.5,
+      "quiet_absent_reads": 0,
+      "quiet_interval_s": 2.0,
+      "bus": "spi"
+    },
+    {
+      "test": "b-rate",
+      "passed": true,
+      "requested_hz": 50.0,
+      "delivered_hz": 50.1,
+      "events": 248,
+      "seq_gaps": 0,
+      "reasm_drops": 0,
+      "bus": "spi"
+    },
+    {
+      "test": "b-rv400",
+      "bus": "spi",
+      "passed": true,
+      "midstream_reconfigured": true,
+      "requested_hz": 400.0,
+      "delivered_hz": 398.3,
+      "seconds": 60.0,
+      "events": 23901,
+      "seq_gaps": 0,
+      "reasm_drops": 0,
+      "worst_delta_us": -119
+    },
+    {
+      "test": "b-ts",
+      "passed": true,
+      "monotonic": true,
+      "ordered_to_tick": true,
+      "inversions": 0,
+      "worst_delta_us": 0,
+      "p99_jitter_intervals": 0.02,
+      "events": 247,
+      "level_fallbacks": 0,
+      "bus": "spi"
+    },
+    {
+      "test": "b-rvphase",
+      "passed": true,
+      "rv_hz": 50.1,
+      "gyro_hz": 50.1,
+      "rv_events": 250,
+      "median_offset_us": -9823,
+      "worst_offset_us": 10199,
+      "bound_us": 400,
+      "level_fallbacks": 0,
+      "bus": "spi"
+    },
+    {
+      "test": "b-i2c100",
+      "passed": true,
+      "bus": "i2c",
+      "requested_hz": 100.0,
+      "seconds": 60.0,
+      "reasm_drops": 0,
+      "level_fallbacks": 0,
+      "hz_01": 126.9,
+      "gaps_01": 0,
+      "ordered_01": true,
+      "hz_02": 100.1,
+      "gaps_02": 0,
+      "ordered_02": true,
+      "hz_03": 100.1,
+      "gaps_03": 0,
+      "ordered_03": true
+    },
+    {
+      "test": "b-girv",
+      "bus": "spi",
+      "passed": true,
+      "requested_hz": 500.0,
+      "delivered_hz": 500.6,
+      "events": 2502,
+      "reasm_drops": 0
+    },
+    {
+      "test": "b-lat",
+      "passed": true,
+      "worst_service_us": 20,
+      "budget_us": 1000.0,
+      "level_fallbacks": 0,
+      "bus": "spi"
+    },
+    {
+      "test": "b-heap",
+      "passed": true,
+      "armed": true,
+      "growth_bytes": 0,
+      "bus": "spi"
+    },
+    {
+      "test": "b-parity",
+      "passed": true,
+      "bus": [
+        "i2c",
+        "spi"
+      ],
+      "i2c_hz": 50.1,
+      "i2c_gaps": 0,
+      "spi_hz": 50.1,
+      "spi_gaps": 0,
+      "agree": true
+    },
+    {
+      "test": "b-reset",
+      "passed": true,
+      "recovery_ms": 241.7,
+      "sensors_to_restore": 1,
+      "recoveries": 2,
+      "reenabled": 1,
+      "bus": "spi"
+    },
+    {
+      "test": "b-soak",
+      "passed": true,
+      "seconds": 3600.0,
+      "events": 180229,
+      "seq_gaps": 0,
+      "reasm_drops": 0,
+      "transport_restarts": 0,
+      "hub_resets": 0,
+      "delivered_hz": 50.1,
+      "bus": "spi"
+    }
+  ]
+}

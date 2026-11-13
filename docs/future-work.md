@@ -1,37 +1,30 @@
 # Future work
 
-Work deliberately not done, one entry per deferral, in the form `EN-03.7`
-defines.
+This document records deferred work in the form EN-03.7 defines.
 
 ## FW-1 — RP2350 only; plain Pico 2 unvalidated
 
 ### What is absent
 
-The HAL builds for RP2350 boards only, and the driver declares
-`PLATFORM rp2350`. No RP2040 HAL exists. Running on a plain Pico 2 is
-unvalidated: the bench runs on a Pico 2 W, and the specification marks a plain
-Pico 2 `UNCONFIRMED`.
+The HAL declares `PLATFORM rp2350` and has no RP2040 implementation.
+A plain Pico 2 is UNCONFIRMED. The benchmark runs on a Pico 2 W.
 
 ### Why it is not built
 
-pico-logging's sink and level atomics need the RP2350's exclusive access, so
-the driver depends on a library that does not build for the RP2040. The
-RP2040's pin-mux residues are unconfirmed until read from its datasheet (the
-RP2350's are confirmed and checked in code), and a plain Pico 2 is unvalidated
-because the only bench board is a Pico 2 W.
+pico-logging's atomics need RP2350 exclusive access and do not build for
+RP2040. The RP2040 pin mapping is unconfirmed. Only a Pico 2 W is available
+for the benchmark.
 
 ### What would have to be true to build it
 
-An RP2040 HAL over the SDK's I2C, SPI and GPIO interfaces, which are common to
-both chips; the RP2040 pin-mux residues confirmed from the datasheet; a bench
-run on a plain Pico 2; and, for the RP2040, pico-logging building for it
-(pico-logging:FW-1). The pin-mux predicates (`detail::pin_mux`) encode the
-RP2350's rules, so an RP2040 HAL needs its own residues beside them.
+RP2040 support needs an SDK-backed HAL, datasheet-confirmed pin-mux
+predicates beside `detail::pin_mux`, and pico-logging support
+(pico-logging:FW-1). Validation of a plain Pico 2 needs a benchmark run on it.
 
 ### Version cost
 
-Not breaking under `EN-06.1`: it adds a platform. Whether an RP2040 HAL needs a
-change to a public HAL header is UNCONFIRMED.
+Adding a platform is not breaking under EN-06.1. Whether an RP2040 HAL needs
+a public header change is UNCONFIRMED.
 
 ### Affected repositories
 
@@ -41,29 +34,31 @@ pico-bno085; pico-logging:FW-1.
 
 ### What is absent
 
-No bench observation is recorded for behaviour the CEVA documents leave open:
-whether a continuation issued before the hub reasserts HINTN complies with the
-SHTP reference manual (1000-3535 §2.5), whether the hub truncates or rounds the timestamp tick, whether the
-hub re-takes a cargo's base delta against a retried assertion, which interrupt
-a fused report is timed from and whether it shares a sample phase with the
-gyroscope, whether calibration survives `reset()`, and whether a BNO086 behaves
-as the driver assumes. No BNO086 has been run on the bench; the driver tolerates its
-zero-length packets, but support for the part is UNCONFIRMED.
+The following hub behaviours lack device evidence and remain UNCONFIRMED:
+
+- A continuation before HINTN reassertion (1000-3535 §2.5).
+- Timestamp tick truncation or rounding.
+- Recalculation of the base delta after a retried assertion.
+- The interrupt reference for fused reports and their sample phase relative
+  to the gyroscope.
+- Calibration survival across `reset()`.
+- BNO086 support. The driver tolerates its zero-length packets, but no BNO086
+  has been tested.
 
 ### Why it is not built
 
-Only an observation on a real part can close each item. The documents are
-silent, and the driver follows the stated fallback and marks the point.
+The CEVA documents leave these behaviours open. The driver marks the gaps
+and uses its documented fallbacks. Each needs observation on a real part.
 
 ### What would have to be true to build it
 
-Each item closed by a recorded bench observation, or left `UNCONFIRMED` with
-the reason it cannot be observed. A BNO086 on the bench is needed for the last.
+Each item needs a recorded observation or an UNCONFIRMED result explaining
+why it cannot be observed. BNO086 validation needs that part on the bench.
 
 ### Version cost
 
-Not breaking under `EN-06.1`: an observation adds specification wording and
-bench records.
+An observation adds specification wording and run records without a breaking
+change (EN-06.1).
 
 ### Affected repositories
 
@@ -78,23 +73,21 @@ neither supported nor prevented, and no guarantee is stated.
 
 ### Why it is not built
 
-The seqlock publication of the HINTN timestamp uses full thread fences, so it is
-probably correct for a reader on the other core. Nothing around it has been
-reviewed for cross-core use, and no test covers it. Claiming support from the
-fences alone would claim a guarantee from the one part that was examined.
+Timestamp publication uses full thread fences and is probably safe across
+cores. The surrounding code has neither a cross-core review nor a test, so
+the fences do not establish support.
 
 ### What would have to be true to build it
 
-The transports, `EdgeLatch`, `HintnLatch`, `SplitReadCompensator` and the
-re-apply pass audited for cross-core use, with the single-caller assumption
-either held by construction or documented as a requirement on the consumer; and
-a test that exercises two cores on hardware.
+Support needs a cross-core audit of both transports, `EdgeLatch`,
+`HintnLatch`, `SplitReadCompensator` and sensor reapplication. The single-caller
+assumption needs enforcement or documentation as a consumer requirement.
+A device test needs to exercise both cores.
 
 ### Version cost
 
-Depends. Not breaking under `EN-06.1` if it lands as a documented guarantee
-with no signature change; breaking if the transports' interface must carry a
-synchronisation concept.
+A guarantee without a signature change is not breaking under EN-06.1.
+A transport interface that must carry a synchronisation concept is breaking.
 
 ### Affected repositories
 
@@ -104,27 +97,23 @@ pico-bno085.
 
 ### What is absent
 
-The interrupt dispatch table holds two latches and each transport owns its own
-pins, so two hubs would work electrically. The driver façade assumes one
-session, and no run drives two parts.
+The dispatch table has two latch slots, and each transport owns its pins.
+The façade holds one session. No run has driven two parts.
 
 ### Why it is not built
 
-Untested: nothing has been exercised with two parts attached, and the façade
-was written for the case that exists.
+Two-part operation is untested. The façade assumes one hub.
 
 ### What would have to be true to build it
 
-Either the façade carries more than one session, or a consumer holds one façade
-per hub with the dispatch table shared safely between them. Two parts on one
-board, and a bench run that drives both at once, since the failures that matter
-are in the interrupt path where the sharing is.
+Support needs either several sessions per façade or one façade per hub,
+with safe dispatch sharing. A benchmark needs to drive two parts on one board
+to exercise the shared interrupt path.
 
 ### Version cost
 
-Depends. Not breaking under `EN-06.1` if a consumer holds one façade per hub
-and the public surface is unchanged; breaking if the façade itself gains a hub
-concept.
+One façade per hub with an unchanged public API is not breaking under
+EN-06.1. Adding a hub concept to the façade is breaking.
 
 ### Affected repositories
 
@@ -139,19 +128,17 @@ combinations that select them are out of scope for the driver.
 
 ### Why it is not built
 
-Support follows a change to pico-sh2's transport seam (pico-sh2:FW-3), which
-today expresses readiness only for a bus with a data-ready signal. A UART
-transport here cannot be written before that seam can carry it.
+pico-sh2's transport interface models readiness through a data-ready signal.
+UART support depends on changing that interface (pico-sh2:FW-3).
 
 ### What would have to be true to build it
 
-pico-sh2:FW-3 done, and a UART transport and its bring-up written against the
-new seam.
+pico-sh2 UART support needs to be complete before this driver can add a UART
+transport and startup sequence (pico-sh2:FW-3).
 
 ### Version cost
 
-Breaking under `EN-06.1`: it follows a change to the seam that this driver
-implements.
+The transport interface change is breaking (EN-06.1).
 
 ### Affected repositories
 
@@ -167,19 +154,17 @@ rate and personal activity), so pico-sh2 has no real golden vectors for them.
 
 ### Why it is not built
 
-None has been exercised against the part. A decoder whose golden vector is
-written from the same reading of the manual as the decoder cannot show the
-decoder is right.
+These decoders have no device evidence. Test vectors derived from the same
+manual reading as a decoder can reproduce its mistakes.
 
 ### What would have to be true to build it
 
-Each sensor enabled on hardware through the bench application and its reports
-captured, for use as golden vectors in pico-sh2 (pico-sh2:FW-2).
+Each sensor needs a benchmark capture to supply pico-sh2's expected report
+bytes (pico-sh2:FW-2).
 
 ### Version cost
 
-Not breaking under `EN-06.1`: it adds bench captures and, in pico-sh2,
-decoders.
+Adding captures and pico-sh2 decoders is not breaking (EN-06.1).
 
 ### Affected repositories
 

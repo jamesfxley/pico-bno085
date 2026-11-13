@@ -3,14 +3,8 @@
 
 #include "pico_bno085/pico_bno085.hpp"
 
-// The advertised version and project(pico_bno085 VERSION ...) are two records
-// of one fact. Bumping either alone stops the build here.
-//
-// The constants live in the umbrella header, whose target is INTERFACE and has
-// no translation unit of its own; this is the driver's compiled one. The CMake
-// values arrive PRIVATE, so they reach no installed consumer. A host test
-// asserts the same pair, but that test is skipped on every configure with tests
-// off -- which is every firmware and every consumer build.
+// Check the header version in firmware and consumer builds, where the host
+// version test does not run.
 static_assert(pico_bno085::VERSION_MAJOR == PICO_BNO085_CMAKE_VERSION_MAJOR);
 static_assert(pico_bno085::VERSION_MINOR == PICO_BNO085_CMAKE_VERSION_MINOR);
 static_assert(pico_bno085::VERSION_PATCH == PICO_BNO085_CMAKE_VERSION_PATCH);
@@ -52,10 +46,8 @@ void Bno085::begin() {
 void Bno085::service() {
     session_.service();
     const bool now_ready = session_.ready();
-    // Re-apply on the rising edge to READY, and also whenever a hub reset is
-    // still outstanding: a reset whose whole re-handshake is drained inside one
-    // service() never shows an edge, and keying only on the edge would leave
-    // the hub streaming nothing with the desired table saying otherwise.
+    // A reset can complete its handshake within one service() call, leaving
+    // READY unchanged.
     if (now_ready && (!was_ready_ || pending_reset_)) {
         schedule_reapply();
         reapply_after_reset_ = pending_reset_;
@@ -64,7 +56,6 @@ void Bno085::service() {
             pending_reset_ = false;
         }
     } else if (!now_ready) {
-        // A reset dropped us out of READY; abandon any in-flight re-apply.
         reapply_active_ = false;
     }
     was_ready_ = now_ready;
@@ -72,8 +63,6 @@ void Bno085::service() {
         pump_reapply();
     }
 }
-
-// --- sensor surface ---------------------------------------------------------
 
 Result<Bno085::EnableState> Bno085::enable_sensor(
     SensorId sensor, const SensorOptions& options) {
@@ -90,24 +79,21 @@ Result<Bno085::EnableState> Bno085::enable_sensor(const FeatureConfig& config) {
     FeatureConfig* slot = store_desired(config);
     if (slot == nullptr) {
         ++config_rejections_;
-        // BR-1: the cap is reached and this is a new sensor; no active sensor
-        // is evicted.
+        // A new sensor at the cap evicts no active sensor (BR-1).
         return Error::UNSUPPORTED;
     }
     if (!session_.ready()) {
-        // Recorded; the rising edge to READY applies it.
         return EnableState::DEFERRED;
     }
     const pico_sh2::Result<void> sent = session_.set_feature(*slot);
     if (sent.ok()) {
         return EnableState::APPLIED;
     }
-    // Against pico-sh2's own code, not this driver's: QUEUE_FULL and TABLE_FULL
-    // both map to NO_ROOM, and only the first of them is retryable here.
+    // QUEUE_FULL and TABLE_FULL both map to NO_ROOM, but only QUEUE_FULL
+    // is retryable here.
     if (sent.error() == Sh2Error::QUEUE_FULL) {
-        // The desired entry is already recorded, so a full TX queue is not
-        // fatal: schedule a re-apply and the recorded desire reaches the hub on
-        // a later service() once the queue drains (BR-2).
+        // The recorded configuration reaches the hub after the queue drains
+        // (BR-2).
         schedule_reapply();
         return EnableState::DEFERRED;
     }
@@ -125,8 +111,7 @@ Result<void> Bno085::disable_sensor(SensorId sensor) {
         off.batch_interval_us = 0;
         const pico_sh2::Result<void> sent = session_.set_feature(off);
         if (!sent.ok()) {
-            // Keep the desired entry so the caller can retry; dropping it now
-            // would leave the sensor streaming with no record to disable it.
+            // The desired entry stays available for a retry.
             return from_sh2(sent.error());
         }
     }
@@ -145,10 +130,8 @@ FeatureConfig* Bno085::find_desired(SensorId sensor) {
 }
 
 FeatureConfig* Bno085::store_desired(const FeatureConfig& config) {
-    // try_emplace rather than insert_or_assign: it reports the cap being
-    // reached by returning nullptr for a new sensor (BR-1) while leaving an
-    // existing one findable, and it does not disturb the pending flag of an
-    // entry being reconfigured.
+    // try_emplace preserves an existing entry's pending flag and returns
+    // nullptr for a new sensor at the cap (BR-1).
     Desired* entry = desired_.try_emplace(config.sensor);
     if (entry == nullptr) {
         return nullptr;
@@ -168,9 +151,8 @@ void Bno085::pump_reapply() {
         const pico_sh2::Result<void> result =
             session_.set_feature(desired.config);
         if (!result.ok()) {
-            // TX queue full: pause. The entry stays pending, so the next
-            // service() flushes the queue and resumes with this one -- whatever
-            // has been enabled or disabled in between.
+            // The pending entry survives enable/disable calls between service()
+            // calls.
             paused = true;
             return DesiredMap::Visit::STOP;
         }
@@ -192,8 +174,6 @@ void Bno085::schedule_reapply() {
         return DesiredMap::Visit::CONTINUE;
     });
 }
-
-// --- calibration / DCD forwarders -------------------------------------------
 
 Result<void> Bno085::tare_now(const TareOptions& options) {
     // P0 subcommand, P1 axes, P2 basis (1000-3625 §6.4.3.1).
@@ -253,8 +233,6 @@ Result<void> Bno085::send_command(std::uint8_t command,
     return from_sh2(session_.send_command(command, params));
 }
 
-// --- diagnostics ------------------------------------------------------------
-
 Stats Bno085::stats() const {
     Stats stats;
     stats.hub_resets = hub_resets_;
@@ -274,10 +252,7 @@ void Bno085::on_hub_reset() {
 
 void Bno085::on_diag(pico_sh2::DiagEvent event) {
     ++diag_events_;
-    // This runs inside service(), between a transfer and the next one the hub
-    // is waiting to be read, and a misbehaving hub can raise an event per
-    // transfer. Log the first of each kind and count the rest: a storm must not
-    // put a log line in the service loop often enough to miss a deadline.
+    // A diagnostic storm must not delay service() enough to miss a deadline.
     const auto kind = static_cast<std::uint8_t>(event);
     const std::uint32_t bit = 1U << (kind % 32U);
     if ((diag_logged_kinds_ & bit) != 0) {

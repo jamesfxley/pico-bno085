@@ -2,9 +2,7 @@
 #pragma once
 
 /// \file strap_plan.hpp
-/// The order the strap and reset lines are driven in (HR-3), as data rather
-/// than as SDK calls, so the order is tested on the host. ControlPins::init()
-/// drives exactly these steps, in this order.
+/// Reset and strap ordering used by ControlPins::init() (HR-3).
 
 #include <array>
 #include <cstddef>
@@ -33,16 +31,9 @@ struct StrapPlan {
     std::size_t count = 0;             ///< How many of them apply.
 };
 
-/// The steps that strap the hub for one bus with it held in reset: NRST
-/// asserted (driven low) first, so every strap settles before the hub samples
-/// it at the reset edge; then PS1 and PS0 (0:0 for I2C, 1:1 for SPI) and BOOTN
-/// high, to run the application image. SA0 is driven last and only for I2C:
-/// in SPI mode the hub's SA0/H_MOSI pin is the SPI transport's MOSI.
-///
-/// \param pins the control lines.
-/// \param spi whether the plan straps for SPI rather than I2C.
+/// Plan strap writes with NRST asserted before any strap changes.
+/// SA0 is driven only for I2C because SPI uses the pin for MOSI.
 /// \param sa0_high the I2C address strap level; unused for SPI.
-/// \return the plan.
 [[nodiscard]] constexpr StrapPlan strap_plan(const StrapPins& pins, bool spi,
                                              bool sa0_high) {
     StrapPlan plan;

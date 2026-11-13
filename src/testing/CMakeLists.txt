@@ -1,12 +1,4 @@
-# Test and diagnostic support, exported with the package.
-#
-# TracingTransport decorates the HAL seam to report the raw bytes of every
-# transfer. Nothing in the driver uses it -- its callers are this repository's
-# own tests, the bench example, and any downstream project testing against the
-# same seam, which is why it ships rather than staying in-tree.
-#
-# Header-only, and built for firmware as well as host: the bench example is a
-# firmware image and drives it behind its `trace 0|1` command.
+# Installed, header-only tracing support for host tests and firmware benches.
 add_library(pico_bno085_testing INTERFACE)
 add_library(pico_bno085::testing ALIAS pico_bno085_testing)
 
@@ -24,6 +16,5 @@ target_include_directories(pico_bno085_testing INTERFACE
 
 target_compile_features(pico_bno085_testing INTERFACE cxx_std_20)
 
-# The decorator wraps pico_sh2's transport interface, which is where the seam
-# it decorates is declared.
+# The transport interface is declared by pico-sh2.
 target_link_libraries(pico_bno085_testing INTERFACE pico_sh2::sh2)

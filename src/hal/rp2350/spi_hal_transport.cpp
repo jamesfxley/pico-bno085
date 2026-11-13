@@ -39,9 +39,7 @@ void deassert_csn(std::uint32_t pin) { gpio_put(pin, true); }
 void SpiHalTransport::end() {
     pending_length_ = 0;
     core_.end();
-    // Hand the pads back as SIO inputs. MOSI matters most: it is the same pad
-    // as SA0, so an I2C transport claiming it next has to be able to drive the
-    // address strap through SIO rather than through the SPI peripheral.
+    // Return MOSI to SIO so an I2C transport can drive the shared SA0 strap.
     gpio_init(config_.miso_pin);
     gpio_init(config_.sck_pin);
     gpio_init(config_.mosi_pin);
@@ -49,15 +47,13 @@ void SpiHalTransport::end() {
 }
 
 pico_sh2::Result<void> SpiHalTransport::init() {
-    // The hub's limit, not a preference (1000-3927 §6.5.2), so a faster clock
-    // is refused before any pin is touched (HR-4).
+    // Reject rates above the hub's limit before touching pins
+    // (1000-3927 §6.5.2) (HR-4).
     if (config_.baud_hz > SPI_MAX_BAUD_HZ) {
         return pico_sh2::Sh2Error::INVALID_ARGUMENT;
     }
-    // A pad the peripheral cannot reach would be configured and then silently
-    // carry nothing, so a pin the mux does not route to this instance, or one
-    // outside bank 0, is refused before any pin is touched (HR-4). CSN is a
-    // plain GPIO, so it needs only the bank bound.
+    // Reject unreachable or out-of-bank GPIOs before touching pins (HR-4).
+    // CSN is a plain GPIO and needs only the bank bound.
     constexpr detail::MuxBounds BOUNDS{.gpio_count = NUM_BANK0_GPIOS};
     const std::uint32_t index = spi_get_index(config_.instance);
     if (!detail::spi_rx(config_.miso_pin, index, BOUNDS) ||
@@ -69,8 +65,7 @@ pico_sh2::Result<void> SpiHalTransport::init() {
     // Straps and NRST first (PS1:PS0 = 1:1 selects SPI), hub held in reset.
     core_.begin_straps();
 
-    // The SDK sets the nearest rate it can reach, which may lie above the
-    // request, so the rate it reports is held to the limit too.
+    // The SDK's rounded rate can exceed the requested rate.
     if (spi_init(config_.instance, config_.baud_hz) > SPI_MAX_BAUD_HZ) {
         spi_deinit(config_.instance);
         return pico_sh2::Sh2Error::INVALID_ARGUMENT;
@@ -80,8 +75,7 @@ pico_sh2::Result<void> SpiHalTransport::init() {
     gpio_set_function(config_.sck_pin, GPIO_FUNC_SPI);
     gpio_set_function(config_.mosi_pin, GPIO_FUNC_SPI);
 
-    // CSN is a plain GPIO so a single transfer can span header and body; idle
-    // high (deasserted).
+    // GPIO CSN keeps header and body within one assertion.
     gpio_init(config_.csn_pin);
     gpio_set_dir(config_.csn_pin, GPIO_OUT != 0U);
     deassert_csn(config_.csn_pin);
@@ -105,12 +99,9 @@ bool SpiHalTransport::wake_and_wait() {
 
 pico_sh2::Result<pico_sh2::ReceivedTransfer> SpiHalTransport::read_transfer(
     std::span<std::uint8_t> dst) {
-    // A span too short to hold a header cannot carry a transfer. Checked before
-    // anything is written through dst.data(): the body length below is
-    // total - HEADER_SIZE, which underflows to a near-SIZE_MAX read for a
-    // shorter span. The session sizes rx_staging_ from the profile so it can
-    // never be short, but this is a public override a consumer can call
-    // directly (CXX-04.5).
+    // A public override can receive a short span, although the session never
+    // passes one. It is rejected before dst.data() is written, because
+    // total - HEADER_SIZE would underflow for it.
     if (dst.size() < pico_sh2::shtp::HEADER_SIZE) {
         return pico_sh2::Sh2Error::INVALID_ARGUMENT;
     }
@@ -124,39 +115,29 @@ pico_sh2::Result<pico_sh2::ReceivedTransfer> SpiHalTransport::read_transfer(
         return pico_sh2::ReceivedTransfer{.length = length,
                                           .intn_edge_us = pending_edge_us_};
     }
-    // Consuming the pending assertion clears the latch and takes the edge this
-    // read is anchored to (AR-2). One CSN assertion is one transfer, and the
-    // hub asserts once per transfer (1000-3535 §2.6), so this read accounts for
-    // the whole cargo and a fresh edge during it belongs to the next one —
-    // unlike I2C, which retrieves a cargo in two transfers and must discard the
-    // assertion the second earns.
+    // Take the timestamp while clearing the latch (AR-2). A fresh edge during
+    // this single transfer belongs to the next cargo (1000-3535 §2.6).
+    // I2C must discard the assertion for its second transfer.
     const std::uint64_t edge_us = core_.consume().edge_us;
 
     assert_csn(config_.csn_pin);
 
-    // One CSN assertion streams header then body — the hub does not re-send the
-    // header (unlike I2C); the payload follows the four header bytes directly.
+    // The body follows the header within one CSN assertion.
     spi_read_blocking(config_.instance, READ_FILL, dst.data(),
                       pico_sh2::shtp::HEADER_SIZE);
 
     auto parsed = pico_sh2::shtp::parse_header(
         std::span(dst.data(), pico_sh2::shtp::HEADER_SIZE));
     if (!parsed.ok()) {
-        // A hub that is not driving MISO leaves the line at the idle level, so
-        // the header reads back as the reserved 0xFFFF that 1000-3535 §2.2 sets
-        // aside for exactly this. SPI has no acknowledge bit, so this is the
-        // only sign the hub has left the bus; count it as the absent read it is
-        // and hand the bytes on, since a read error would fault a session that
-        // is about to recover on the re-advertisement (SR-5).
+        // Pass the reserved dead-bus pattern to the engine so reset recovery
+        // can run (1000-3535 §2.2) (SR-5).
         core_.note_absent_read();
         deassert_csn(config_.csn_pin);
         return pico_sh2::ReceivedTransfer{.length = pico_sh2::shtp::HEADER_SIZE,
                                           .intn_edge_us = edge_us};
     }
     if (parsed.value().transfer_length <= pico_sh2::shtp::HEADER_SIZE) {
-        // A null header: the hub has nothing pending. Normal on SPI, where
-        // every read clocks out a full transfer whether or not a cargo exists
-        // (1000-3535 §2.3.1).
+        // A null header carries no cargo (1000-3535 §2.3.1).
         deassert_csn(config_.csn_pin);
         return pico_sh2::ReceivedTransfer{.length = pico_sh2::shtp::HEADER_SIZE,
                                           .intn_edge_us = edge_us};
@@ -186,15 +167,15 @@ pico_sh2::Result<void> SpiHalTransport::write_transfer(
     }
     assert_csn(config_.csn_pin);
     gpio_put(core_.wake_pin(), true);
-    // HR-4: the answering edge belongs to this duplex transfer (2.6).
+    // The answering edge belongs to this duplex transfer (1000-3535 §2.6)
+    // (HR-4).
     const auto edge_us = core_.consume().edge_us;
     spi_write_read_blocking(config_.instance, frame.data(), pending_.data(),
                             pico_sh2::shtp::HEADER_SIZE);
     const auto plan = duplex_write(
         frame.size(), std::span<const std::uint8_t, 4>(pending_.data(), 4),
         pending_.size());
-    // Exchange the remaining frame, retaining the part within staging capacity.
-    // HR-4, 1000-3535 2.3.1: the longer direction determines transfer length.
+    // The longer direction sets the transfer length (1000-3535 §2.3.1) (HR-4).
     if (frame.size() > pico_sh2::shtp::HEADER_SIZE) {
         spi_write_read_blocking(config_.instance,
                                 frame.data() + pico_sh2::shtp::HEADER_SIZE,

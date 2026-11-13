@@ -23,9 +23,7 @@
 
 namespace pico_bno085::hal {
 
-// split_read.hpp restates these so it needs no SDK include and stays
-// host-testable; a divergence must be a build failure here, not a surprise on
-// the bench.
+// A mismatch with the SDK codes must fail compilation.
 static_assert(SDK_ERROR_GENERIC == PICO_ERROR_GENERIC);
 static_assert(SDK_ERROR_TIMEOUT == PICO_ERROR_TIMEOUT);
 
@@ -41,9 +39,7 @@ pico_sh2::Sh2Error bus_fault(TransferOutcome outcome) {
 
 void I2cHalTransport::end() {
     core_.end();
-    // Hand the pads back as SIO inputs. Leaving them assigned to the I2C
-    // peripheral would mean a transport claiming them next drives a pad the
-    // peripheral still owns, and the level never reaches the hub.
+    // Return pads to SIO inputs so the next transport can drive them.
     gpio_init(config_.sda_pin);
     gpio_init(config_.scl_pin);
 }
@@ -56,14 +52,12 @@ std::size_t I2cHalTransport::note_absent(std::span<std::uint8_t> dst) {
 }
 
 pico_sh2::Result<void> I2cHalTransport::init() {
-    // The hub's limit, not a preference (1000-3927 §6.5.1), so a faster clock
-    // is refused before any pin is touched (HR-4).
+    // Reject rates above the hub's limit before touching pins
+    // (1000-3927 §6.5.1) (HR-4).
     if (config_.baud_hz > I2C_MAX_BAUD_HZ) {
         return pico_sh2::Sh2Error::INVALID_ARGUMENT;
     }
-    // A pad the peripheral cannot reach would be configured and then silently
-    // carry nothing, so a pin the mux does not route to this instance, or one
-    // outside bank 0, is refused before any pin is touched (HR-4).
+    // Reject unreachable or out-of-bank GPIOs before touching pins (HR-4).
     constexpr detail::MuxBounds BOUNDS{.gpio_count = NUM_BANK0_GPIOS};
     const std::uint32_t index = i2c_get_index(config_.instance);
     if (!detail::i2c_sda(config_.sda_pin, index, BOUNDS) ||
@@ -73,8 +67,7 @@ pico_sh2::Result<void> I2cHalTransport::init() {
     // Straps and NRST first, hub held in reset until the session releases it.
     core_.begin_straps();
 
-    // The SDK sets the nearest rate it can reach, which may lie above the
-    // request, so the rate it reports is held to the limit too.
+    // The SDK's rounded rate can exceed the requested rate.
     if (i2c_init(config_.instance, config_.baud_hz) > I2C_MAX_BAUD_HZ) {
         i2c_deinit(config_.instance);
         return pico_sh2::Sh2Error::INVALID_ARGUMENT;
@@ -89,26 +82,13 @@ pico_sh2::Result<void> I2cHalTransport::init() {
 
 pico_sh2::Result<pico_sh2::ReceivedTransfer> I2cHalTransport::read_transfer(
     std::span<std::uint8_t> dst) {
-    // A span too short to hold a header cannot carry a transfer, and the reads
-    // below write through dst.data() without consulting its size. The session
-    // sizes rx_staging_ from the profile so it can never be short, but this is
-    // a public override a consumer can call directly, so the precondition is
-    // checked here rather than assumed of the caller (CXX-04.5).
+    // A public override can receive a short span, although the session never
+    // passes one, and the reads below write through dst.data() unchecked.
     if (dst.size() < pico_sh2::shtp::HEADER_SIZE) {
         return pico_sh2::Sh2Error::INVALID_ARGUMENT;
     }
-    // Read the header first to learn the cargo length, then re-read the whole
-    // cargo (the hub re-offers it including the header). The split is not a
-    // choice: the length is only knowable from the header, and a BNO085 asked
-    // for more bytes than it holds stretches the clock until it has data
-    // (1000-3927 §1.2.2.2), so there is no safe over-read to predict with.
-    //
-    // Consuming the pending assertion clears the latch and takes the edge this
-    // read is anchored to (AR-2). It accounts for the header read alone; the
-    // hub asserts once per transfer (1000-3535 §2.6), so the cargo read below
-    // earns a second assertion that discard_continuation_assertion() accounts
-    // for. The edge is the first assertion's, the one a segmented cargo is
-    // timed from (1000-3535 §2.6).
+    // Take the timestamp while clearing the latch (AR-2). The first assertion
+    // anchors a segmented cargo (1000-3535 §2.6).
     const std::uint64_t edge_us = core_.consume().edge_us;
 
     const int header = i2c_read_timeout_us(
@@ -116,12 +96,9 @@ pico_sh2::Result<pico_sh2::ReceivedTransfer> I2cHalTransport::read_transfer(
         pico_sh2::shtp::HEADER_SIZE, false, config_.transfer_timeout_us);
     const TransferOutcome header_outcome = classify(header);
     if (header_outcome != TransferOutcome::OK) {
-        // A read is only issued behind a HINTN assertion (HR-1), so a hub that
-        // does not acknowledge it has left the bus since asserting — it is
-        // resetting, not faulty. Report the zero-length transfer a hub that
-        // cannot answer produces, which is all a transport without an
-        // acknowledge bit can report, and let the session's reset recovery
-        // (pico-sh2 SR-5) take it from there.
+        // Reads start only behind HINTN (HR-1), so a hub that does not
+        // acknowledge has left the bus to reset. Report it as an empty transfer
+        // so the session's reset recovery (pico-sh2 SR-5) can run.
         if (header_outcome == TransferOutcome::HUB_ABSENT) {
             return pico_sh2::ReceivedTransfer{.length = note_absent(dst),
                                               .intn_edge_us = edge_us};
@@ -132,9 +109,7 @@ pico_sh2::Result<pico_sh2::ReceivedTransfer> I2cHalTransport::read_transfer(
         return pico_sh2::Sh2Error::BUS_ERROR;
     }
 
-    // Dead bus (0xFFFF) or a header-only / zero-length poll (BNO086 quirk):
-    // hand the four bytes to the engine, which treats them as empty or rejects
-    // them. Never an error — that would fault an otherwise healthy session.
+    // Pass empty or invalid headers to the engine without a transport error.
     auto parsed = pico_sh2::shtp::parse_header(
         std::span(dst.data(), pico_sh2::shtp::HEADER_SIZE));
     if (!parsed.ok() ||
@@ -152,8 +127,7 @@ pico_sh2::Result<pico_sh2::ReceivedTransfer> I2cHalTransport::read_transfer(
                             to_read, false, config_.transfer_timeout_us);
     const TransferOutcome body_outcome = classify(body);
     if (body_outcome != TransferOutcome::OK) {
-        // The hub left the bus between offering the header and serving the
-        // cargo; the partial read in dst describes nothing.
+        // An absent hub invalidates the partially read cargo.
         if (body_outcome == TransferOutcome::HUB_ABSENT) {
             return pico_sh2::ReceivedTransfer{.length = note_absent(dst),
                                               .intn_edge_us = edge_us};
@@ -164,8 +138,7 @@ pico_sh2::Result<pico_sh2::ReceivedTransfer> I2cHalTransport::read_transfer(
         return pico_sh2::Sh2Error::BUS_ERROR;
     }
 
-    // Two transfers were performed, so the hub asserted twice. The second
-    // assertion announces the read that just completed, not a cargo (HR-6).
+    // Clear the assertion for the completed second transfer (HR-6).
     core_.discard_continuation_assertion();
 
     split_read_.on_cargo(dst.first(to_read), parsed.value().channel, truncated);
@@ -175,16 +148,13 @@ pico_sh2::Result<pico_sh2::ReceivedTransfer> I2cHalTransport::read_transfer(
 
 pico_sh2::Result<void> I2cHalTransport::write_transfer(
     std::span<const std::uint8_t> frame) {
-    // The session frames every write to fit one transfer; no wake handshake on
-    // I2C. The hub cannot reassemble, so a short write is a bus fault.
+    // A short write is a fault because the hub cannot reassemble it.
     const int written =
         i2c_write_timeout_us(config_.instance, config_.address, frame.data(),
                              frame.size(), false, config_.transfer_timeout_us);
     const TransferOutcome outcome = classify(written);
     if (outcome != TransferOutcome::OK) {
-        // A write is host-initiated, so an unacknowledged address is not the
-        // benign "hub is resetting" case a read's is: the session asked for
-        // something the hub never received. Surface it.
+        // A host-initiated write that the hub never received is a fault.
         return bus_fault(outcome);
     }
     if (static_cast<std::size_t>(written) != frame.size()) {

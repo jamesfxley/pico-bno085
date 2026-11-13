@@ -2,13 +2,8 @@
 #pragma once
 
 /// \file i2c_hal_transport.hpp
-/// IHalTransport over the RP2350 I2C peripheral. Owns the strap/reset lines
-/// (ControlPins), the HINTN latch (HintnLatch), and the HINTN-gated read
-/// sequencing. A read begins only while HINTN is asserted (HR-1) and
-/// every transaction is timeout-bounded (HR-2), so a clock-stretching BNO085 or
-/// a zero-length BNO086 poll can never wedge service().
-///
-/// Firmware-only: it links the Pico SDK I2C/GPIO drivers.
+/// SDK I2C transport with HINTN-gated reads and transaction timeouts (HR-1,
+/// HR-2).
 
 #include <cstddef>
 #include <cstdint>
@@ -24,9 +19,7 @@
 
 namespace pico_bno085::hal {
 
-/// Per-transaction I2C ceiling. Bounds a bus fault or a wedged clock stretch;
-/// it is not the HINTN-service latency budget. Covers a full large-profile
-/// transfer at the minimum baud plus stretch margin.
+/// I2C transaction timeout in microseconds.
 inline constexpr std::uint32_t I2C_TRANSFER_TIMEOUT_US = 30'000;
 
 /// The SH-2 transport seam driven over I2C.
@@ -40,10 +33,12 @@ class I2cHalTransport final : public pico_sh2::IHalTransport {
         i2c_inst_t* instance = I2C_INSTANCE_INDEX == 0 ? i2c0 : i2c1;
         /// 7-bit hub address, selected by the SA0 strap.
         std::uint8_t address = static_cast<std::uint8_t>(I2C_ADDRESS_SA0_LOW);
-        std::uint32_t sda_pin = PIN_I2C_SDA;  ///< SDA GPIO.
-        std::uint32_t scl_pin = PIN_I2C_SCL;  ///< SCL GPIO.
-        std::uint32_t baud_hz =
-            I2C_MAX_BAUD_HZ;  ///< Bus clock; init() refuses more.
+        /// SDA GPIO.
+        std::uint32_t sda_pin = PIN_I2C_SDA;
+        /// SCL GPIO.
+        std::uint32_t scl_pin = PIN_I2C_SCL;
+        /// Bus clock in hertz, bounded by the hub limit.
+        std::uint32_t baud_hz = I2C_MAX_BAUD_HZ;
         /// Per-transaction ceiling; see I2C_TRANSFER_TIMEOUT_US.
         std::uint32_t transfer_timeout_us = I2C_TRANSFER_TIMEOUT_US;
     };
@@ -54,16 +49,11 @@ class I2cHalTransport final : public pico_sh2::IHalTransport {
           core_(config.control, Bus::I2C,
                 config.address == I2C_ADDRESS_SA0_HIGH) {}
 
-    /// Configure the control lines (hub held in reset), the I2C peripheral, and
-    /// the HINTN interrupt. Call before Bno085::begin().
-    ///
-    /// \return INVALID_ARGUMENT, before any pin is touched, if `baud_hz` is
-    ///         above the hub's limit, or if SDA or SCL is not a pin
-    ///         the selected peripheral can reach (RP2350 datasheet, Table 677),
-    ///         or either pin is outside bank 0, or once the peripheral is
-    ///         released again if the rate the SDK actually sets is (HR-4);
-    ///         otherwise failure only if the interrupt dispatch table is full,
-    ///         which is a wiring mistake rather than a runtime condition.
+    /// Initialise I2C and control pins before Bno085::begin().
+    /// \return INVALID_ARGUMENT for excessive baud or unreachable SDA/SCL
+    /// (RP2350 Table 677), or out-of-bank pins, before touching pins. An
+    /// excessive actual SDK baud releases the peripheral and returns the same
+    /// error. Otherwise only TABLE_FULL can fail (HR-4).
     pico_sh2::Result<void> init();
 
     /// Whether the hub has a transfer waiting: HINTN asserted (HR-1).
@@ -77,49 +67,38 @@ class I2cHalTransport final : public pico_sh2::IHalTransport {
     /// Start a fresh service-latency measurement window (HR-5).
     void clear_service_latency_peak() { core_.clear_service_latency_peak(); }
 
-    /// Retrieve one transfer, undoing the traces of the split read (HR-6).
-    ///
-    /// \param dst staging span for the transfer; at least
-    ///        `pico_sh2::shtp::HEADER_SIZE` bytes, which the session's
-    ///        profile-sized RX staging always satisfies.
-    /// \return the number of bytes staged and the HINTN edge the read
-    ///         answers, taken as the read clears the latch (AR-2), or
-    ///         INVALID_ARGUMENT for a span
-    ///         shorter than a header. An empty or absent hub reports success
-    ///         with a zero-length header rather than an error, because the
-    ///         session's drain loop faults on any read error.
+    /// Retrieve a transfer and undo the header peek's effects (HR-6).
+    /// \param dst staging span, at least pico_sh2::shtp::HEADER_SIZE bytes.
+    /// \return Staged length and edge taken when clearing the latch (AR-2), or
+    /// INVALID_ARGUMENT for a short span. Empty or absent hubs return a
+    /// successful empty transfer.
     pico_sh2::Result<pico_sh2::ReceivedTransfer> read_transfer(
         std::span<std::uint8_t> dst) override;
 
     /// Send one frame to the hub.
-    ///
-    /// \param frame the bytes to send.
     pico_sh2::Result<void> write_transfer(
         std::span<const std::uint8_t> frame) override;
 
     /// Microseconds since boot, from the SDK timer.
     std::uint64_t now_us() override { return TransportCore::now_us(); }
 
-    /// Drive NRST, active low.
-    ///
+    /// Drive active-low NRST.
     /// \param asserted true to hold the hub in reset.
     void set_reset(bool asserted) override { core_.set_reset(asserted); }
 
-    /// Release the HINTN interrupt and return the bus pads to SIO inputs, so
-    /// another transport can claim them. The hub is left as it stands.
+    /// Release HINTN and return bus pads to SIO inputs. The hub state is
+    /// unchanged.
     void end();
 
    private:
-    // Record a read the hub did not acknowledge and stage the zero-length
-    // header reported in its place, clearing the split-read state the hub
-    // abandons while it is away. Returns the transfer length to report.
+    // Count an absent read, clear compensation state and stage an empty header.
+    // Return the staged length.
     std::size_t note_absent(std::span<std::uint8_t> dst);
 
     Config config_;
     TransportCore core_;
 
-    // Undoes the continuation flag and the extra sequence number the hub's
-    // answer to a split read carries (HR-6).
+    // Compensation for the header peek's continuation flag and sequence (HR-6).
     SplitReadCompensator split_read_;
 };
 

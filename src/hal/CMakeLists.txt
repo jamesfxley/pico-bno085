@@ -1,8 +1,4 @@
-# The protocol-level parts of the HAL that touch no SDK: the split-read
-# compensation, the transfer-code classification, the pin-mux rules and the strap
-# order. Header-only and built on
-# host as well as firmware, so the reasoning they carry is unit-tested rather
-# than only exercised on a wired board.
+# SDK-free, header-only HAL logic, tested on host.
 add_library(pico_bno085_hal_core INTERFACE)
 add_library(pico_bno085::hal_core ALIAS pico_bno085_hal_core)
 
@@ -25,10 +21,7 @@ target_include_directories(pico_bno085_hal_core INTERFACE
 target_compile_features(pico_bno085_hal_core INTERFACE cxx_std_20)
 target_link_libraries(pico_bno085_hal_core INTERFACE pico_sh2::sh2)
 
-# The rest of the HAL drives the SDK's I2C/GPIO/timer peripherals, so it is
-# firmware-only and is a module of its own (rp2350/) rather than a conditional
-# arm of this one: CXX-13.1 puts one target in one directory, and the two
-# differ in what they link and where they can run.
+# The SDK-backed transport module builds only for firmware.
 if(PICO_BNO085_BUILD_FIRMWARE)
     add_subdirectory(rp2350)
 endif()

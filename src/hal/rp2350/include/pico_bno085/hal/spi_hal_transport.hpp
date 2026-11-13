@@ -2,13 +2,7 @@
 #pragma once
 
 /// \file spi_hal_transport.hpp
-/// IHalTransport over the RP2350 SPI peripheral (mode 3, <= 3 MHz). Owns the
-/// strap/reset lines (ControlPins), the HINTN latch (HintnLatch), the CSN line,
-/// and the host-write WAKE handshake (HR-4): drive PS0/WAKE low, wait for the
-/// hub to assert HINTN, assert CSN, clock the frame. Reads are HINTN-gated
-/// (HR-1) and stream header-then-body within one CSN assertion.
-///
-/// Firmware-only: it links the Pico SDK SPI/GPIO drivers.
+/// SDK SPI transport with WAKE handshakes (HR-4) and HINTN-gated reads (HR-1).
 
 #include <array>
 #include <cstddef>
@@ -25,11 +19,8 @@
 
 namespace pico_bno085::hal {
 
-/// Ceiling on the WAKE -> HINTN handshake. The datasheet gives twk, "BNO08X
-/// wakeup from wake signal assert", as 150 µs typical (Figure 6-12) and
-/// specifies no maximum, so this is a wedge guard with margin rather than a
-/// derived bound: a write that waits this long has lost the hub, and reports
-/// TIMEOUT rather than blocking service() further.
+/// WAKE-to-HINTN timeout in microseconds (1000-3927 Figure 6-12).
+/// This is a timeout guard, not a datasheet maximum.
 inline constexpr std::uint32_t SPI_WAKE_TIMEOUT_US = 3'000;
 
 /// The SH-2 transport seam driven over SPI.
@@ -39,13 +30,18 @@ class SpiHalTransport final : public pico_sh2::IHalTransport {
     struct Config {
         /// Strap, reset and HINTN wiring.
         ControlConfig control{};
-        spi_inst_t* instance = spi0;            ///< SDK SPI instance.
-        std::uint32_t miso_pin = PIN_SPI_MISO;  ///< MISO GPIO.
-        std::uint32_t csn_pin = PIN_SPI_CSN;    ///< Active-low chip select.
-        std::uint32_t sck_pin = PIN_SPI_SCK;    ///< Clock GPIO.
-        std::uint32_t mosi_pin = PIN_SPI_MOSI;  ///< MOSI GPIO (SA0's pin).
-        std::uint32_t baud_hz =
-            SPI_MAX_BAUD_HZ;  ///< Bus clock; init() refuses more.
+        /// SDK SPI instance.
+        spi_inst_t* instance = spi0;
+        /// MISO GPIO.
+        std::uint32_t miso_pin = PIN_SPI_MISO;
+        /// Active-low chip select.
+        std::uint32_t csn_pin = PIN_SPI_CSN;
+        /// Clock GPIO.
+        std::uint32_t sck_pin = PIN_SPI_SCK;
+        /// MOSI GPIO (SA0's pin).
+        std::uint32_t mosi_pin = PIN_SPI_MOSI;
+        /// Bus clock in hertz, bounded by the hub limit.
+        std::uint32_t baud_hz = SPI_MAX_BAUD_HZ;
         /// WAKE handshake ceiling; see SPI_WAKE_TIMEOUT_US.
         std::uint32_t wake_timeout_us = SPI_WAKE_TIMEOUT_US;
     };
@@ -55,17 +51,11 @@ class SpiHalTransport final : public pico_sh2::IHalTransport {
         : config_(config),
           core_(config.control, Bus::SPI, /*sa0_high=*/false) {}
 
-    /// Configure the control lines (hub held in reset), the SPI peripheral,
-    /// CSN, and the HINTN interrupt. Call before Bno085::begin().
-    ///
-    /// \return INVALID_ARGUMENT, before any pin is touched, if `baud_hz` is
-    ///         above the hub's limit, or if MISO, SCK or MOSI is not a pin
-    ///         the selected peripheral can reach (RP2350 datasheet, Table 677),
-    ///         or any of the four pins (CSN included) is outside bank 0,
-    ///         or once the peripheral is released again
-    ///         if the rate the SDK actually sets is (HR-4); otherwise failure
-    ///         only if the interrupt dispatch table is full, which is a wiring
-    ///         mistake rather than a runtime condition.
+    /// Initialise SPI and control pins before Bno085::begin().
+    /// \return INVALID_ARGUMENT for excessive baud, unreachable MISO/SCK/MOSI
+    /// (RP2350 Table 677) or out-of-bank pins, including CSN, before touching
+    /// pins. An excessive actual SDK baud releases the peripheral and returns
+    /// the same error. Otherwise only TABLE_FULL can fail (HR-4).
     pico_sh2::Result<void> init();
 
     /// Whether a duplex cargo is stashed or HINTN is asserted (HR-1).
@@ -81,35 +71,25 @@ class SpiHalTransport final : public pico_sh2::IHalTransport {
     /// Start a fresh service-latency measurement window (HR-5).
     void clear_service_latency_peak() { core_.clear_service_latency_peak(); }
 
-    /// Return a retained duplex transfer first, without bus activity; otherwise
-    /// stream header and body within one CSN assertion.
-    ///
-    /// \param dst staging span for the transfer; at least
-    ///        `pico_sh2::shtp::HEADER_SIZE` bytes, which the session's
-    ///        profile-sized RX staging always satisfies.
-    /// \return the number of bytes staged and the HINTN edge the read
-    ///         answers, taken when its bus read or preceding duplex write
-    ///         clears the latch (AR-2), or INVALID_ARGUMENT for a span shorter
-    ///         than a header. An empty or absent hub reports success with its
-    ///         header rather than an error, because the session's drain loop
-    ///         faults on any read error.
+    /// Return staged duplex RX first, or read header and body under one CSN
+    /// assertion.
+    /// \param dst staging span, at least pico_sh2::shtp::HEADER_SIZE bytes.
+    /// \return Staged length and edge taken when the read or duplex write
+    /// cleared the latch (AR-2), or INVALID_ARGUMENT for a short span. Empty or
+    /// absent hubs return their header successfully.
     pico_sh2::Result<pico_sh2::ReceivedTransfer> read_transfer(
         std::span<std::uint8_t> dst) override;
 
-    /// Send one frame with the WAKE handshake, retaining coincident RX (HR-4).
-    ///
-    /// \param frame the bytes to send.
-    /// \return TIMEOUT if WAKE was not answered, INVALID_ARGUMENT for a short
-    ///         or over-staging-capacity frame, or BUSY until a preceding duplex
-    ///         cargo has been read.
+    /// Send with a WAKE handshake and retain coincident RX (HR-4).
+    /// \return TIMEOUT if WAKE is unanswered, INVALID_ARGUMENT for a short or
+    /// oversized frame, or BUSY until the previous duplex cargo is read.
     pico_sh2::Result<void> write_transfer(
         std::span<const std::uint8_t> frame) override;
 
     /// Microseconds since boot, from the SDK timer.
     std::uint64_t now_us() override { return TransportCore::now_us(); }
 
-    /// Drive NRST, active low.
-    ///
+    /// Drive active-low NRST.
     /// \param asserted true to hold the hub in reset.
     void set_reset(bool asserted) override {
         if (asserted) {
@@ -118,13 +98,13 @@ class SpiHalTransport final : public pico_sh2::IHalTransport {
         core_.set_reset(asserted);
     }
 
-    /// Release the HINTN interrupt and return the bus pads to SIO inputs, so
-    /// another transport can claim them. The hub is left as it stands.
+    /// Release HINTN and return bus pads to SIO inputs. The hub state is
+    /// unchanged.
     void end();
 
    private:
-    // Drive WAKE low and wait for the hub to assert HINTN, up to the configured
-    // deadline. Returns false on timeout (WAKE left released).
+    // Assert WAKE until HINTN or timeout. Return false with WAKE released on
+    // timeout.
     bool wake_and_wait();
 
     std::array<std::uint8_t, pico_sh2::ActiveProfile::MAX_RX_TRANSFER_LEN>

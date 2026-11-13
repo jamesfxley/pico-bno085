@@ -10,11 +10,9 @@ target_sources(pico_bno085_driver PUBLIC
         include/pico_bno085/driver/bno085.hpp
 )
 
-# PRIVATE: build-time facts for the static_assert in bno085.cpp, not part of the
-# interface. PUBLIC would propagate this build's version into every installed
-# consumer's compile line. The umbrella header belongs to pico_bno085::core,
-# which links this module rather than the other way round, so it is reached by a
-# private include directory and not a link dependency.
+# PRIVATE definitions bind the header version to project() without reaching
+# installed consumers. The umbrella includes this module, so its header is
+# reached through a private include path to avoid a circular dependency.
 house_cxx_version_definitions(pico_bno085_driver pico_bno085 PRIVATE)
 
 target_include_directories(pico_bno085_driver PRIVATE
@@ -35,9 +33,7 @@ target_link_libraries(pico_bno085_driver
     PRIVATE
         pico_bno085_strict)
 
-# This target builds for host and for firmware. Only the firmware configure
-# drops -Werror from pico_bno085_strict, so only there does the flag have to be
-# put back per source; on host it is already on the target.
+# Firmware needs per-source -Werror because SDK sources share the target.
 if(PICO_BNO085_BUILD_FIRMWARE)
     house_cxx_werror_sources(bno085.cpp)
 endif()

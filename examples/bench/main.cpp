@@ -1,32 +1,6 @@
 // SPDX-License-Identifier: MIT
-// On-device validation harness for the BNO085 driver.
-//
-// Brings the hub up over either bus and exposes a USB CDC line protocol that
-// bench.py drives to run the device checklist. The firmware only measures and
-// reports; every pass/fail threshold lives in the harness, so the device stays
-// a dumb instrument and a threshold change needs no reflash.
-//
-// The bus is chosen at run time. Both transports are compiled in and only the
-// selected one is initialised, so a single image covers both halves of the
-// checklist and b-parity can compare them without a reflash in between.
-//
-// Pin-electrical diagnostics are outside this harness. Use trace to inspect
-// transfers and boot to retry startup; the usage guide describes the sensor's
-// power, straps and reference wiring.
-//
-// Protocol, host -> device (one command per line):
-//   bus i2c|spi          select the bus and bring the hub up, re-strapping
-//   cfg <id_hex> <us>    enable/reconfigure a sensor at a report interval
-//   off <id_hex>         disable a sensor
-//   run <ms>             stream events for a while, then a '# stats' summary
-//   stat                 emit a '# stats' line now
-//   reset                restart the hub, using the executable-channel reset
-//   cleardcd             clear the calibration and reset
-//   flush <id_hex>       force a batching sensor to deliver now
-//   heap                 report post-init heap growth (AR-1)
-//   trace 0|1|2          off, capped transfers, or full reads with edge
-//   boot                 re-run the handshake without reflashing
-//   info                 constants the harness needs to interpret the output
+// Device benchmark. The line protocol and checklist are in README.md.
+// Heap growth is measured after session construction (AR-1).
 #include <hardware/timer.h>
 #include <pico/error.h>
 #include <pico/stdio.h>
@@ -61,16 +35,10 @@ constexpr std::size_t LINE_CAP = 64;
 constexpr int BASE_DEC = 10;
 constexpr int BASE_HEX = 16;
 
-// Resolution of the base-delta and report-delay fields (1000-3625 §7.2.1).
-// PR-3 follows 1000-3927 §1.3.5.3 Figure 1-36 for the delay sign. The
-// harness needs it to bound timestamp ordering, and reads it from `info` rather
-// than restating it.
+// Timestamp tick in microseconds (1000-3625 §7.2.1) (PR-3).
 constexpr unsigned TICK_US = 100;
 
-// --- wire tracing ------------------------------------------------------------
-
-// Mode 1 caps output to limit serial service time. Mode 2 deliberately emits
-// complete reads for the wire-timing diagnostic.
+// Mode 1 caps serial output. Mode 2 emits complete reads for timing diagnosis.
 unsigned g_trace_mode = 0;
 
 void print_trace(void* /*ctx*/,
@@ -82,7 +50,8 @@ void print_trace(void* /*ctx*/,
                    static_cast<unsigned>(record.error));
             return;
         }
-        // OR-1: fixed storage and direct stdio, no temporary payload or string.
+        // Fixed storage avoids a temporary payload.
+        // Direct stdio avoids a temporary string (OR-1).
         printf("# wire edge_us=%llu n=%zu:",
                static_cast<unsigned long long>(record.intn_edge_us),
                record.bytes.size());
@@ -109,10 +78,7 @@ void print_trace(void* /*ctx*/,
     printf("%s\n", shown < record.bytes.size() ? " ..." : "");
 }
 
-// --- the session under test --------------------------------------------------
-
-// Both transports exist for the whole run; `bus` decides which is brought up.
-// Static storage, so selecting a bus allocates nothing (AR-1).
+// Static transports allow bus selection without allocation (AR-1).
 pico_bno085::hal::I2cHalTransport g_i2c{{}};
 pico_bno085::hal::SpiHalTransport g_spi{{}};
 
@@ -131,11 +97,8 @@ Run g_run;
 // Post-init heap growth (AR-1), armed once the session is constructed.
 pico_util::HeapWatermark g_heap;
 
-// Static, not local to main(). Bno085 embeds the session's fixed-capacity
-// buffers, so it is 2.2 KiB under the default profile and 3.8 KiB under the
-// large one, against a 4 KiB core-0 stack — on the stack the large profile
-// leaves a few hundred bytes for everything main() calls, printf included.
-// Static storage also puts it where the footprint gate can see it.
+// Static storage keeps session buffers off the 4 KiB core-0 stack and
+// includes them in footprint measurements.
 pico_bno085::testing::TracingTransport g_tracer_object(g_i2c);
 pico_bno085::Bno085 g_imu(g_tracer_object);
 
@@ -145,17 +108,14 @@ void on_event(void* ctx, const SensorEvent& event) {
         return;
     }
     ++run->events;
-    // One line per event: sensor, per-sensor sequence, reconstructed timestamp,
-    // accuracy. bench.py derives rate, drop count (sequence gaps), and jitter.
+    // Event fields are sensor, sequence, reconstructed time and accuracy.
     printf("E,%u,%u,%llu,%u\n", static_cast<unsigned>(event.sensor),
            static_cast<unsigned>(event.sequence),
            static_cast<unsigned long long>(event.event_us),
            static_cast<unsigned>(event.accuracy));
 }
 
-// Start a fresh service-latency window on the live transport, so a run's figure
-// describes the run and not the startup outlier (see
-// TransportCore::clear_service_latency_peak).
+// Clear the latency peak on the selected transport before each run.
 void clear_service_latency_peak() {
     if (g_selected == &g_spi) {
         g_spi.clear_service_latency_peak();
@@ -164,8 +124,7 @@ void clear_service_latency_peak() {
     }
 }
 
-// The transport counters, whichever bus is live. Both answer the same
-// questions, so the harness never needs to know which it is reading.
+// Read counters from the selected transport.
 pico_bno085::hal::TransportCounters transport_counters() {
     if (g_selected == &g_spi) {
         return g_spi.counters();
@@ -176,10 +135,7 @@ pico_bno085::hal::TransportCounters transport_counters() {
     return {};
 }
 
-// The stats line is `key=value` pairs, which the harness parses generically.
-// The session's counters are emitted by walking the set rather than naming each
-// one, so adding a counter in pico-sh2 reaches the bench without an edit here —
-// and no counter can be printed under another's label.
+// Walk session counters so new counters reach the host with their own labels.
 void print_stats(const pico_bno085::Bno085& imu) {
     const pico_bno085::Stats stats = imu.stats();
     printf("# stats bus=%s ready=%d state=%u fault=%u fault_phase=%u",
@@ -209,18 +165,13 @@ void print_stats(const pico_bno085::Bno085& imu) {
         static_cast<unsigned long>(counters.service_latency_max_us));
 }
 
-// --- line protocol -----------------------------------------------------------
-
-// The argument text of a command whose prefix has already matched. Taking the
-// offset from the prefix itself is what keeps the two from disagreeing: a
-// hand-written length is right only until the command is renamed.
+// Derive the argument offset from the matched prefix so renaming stays safe.
 constexpr std::string_view arguments(std::string_view line,
                                      std::string_view prefix) {
     return line.substr(prefix.size());
 }
 
-// Parse a whitespace-delimited unsigned field at the given base out of `text`,
-// advancing `text` past it. Returns false if no digits parse.
+// Parse and advance past an unsigned field. Return false if no digits parse.
 bool take_uint(std::string_view& text, unsigned& out, int base) {
     while (!text.empty() && text.front() == ' ') {
         text.remove_prefix(1);
@@ -234,8 +185,8 @@ bool take_uint(std::string_view& text, unsigned& out, int base) {
     return true;
 }
 
-// Read one newline-terminated command into `buf` without blocking the service
-// loop. Returns the line as a view when complete, empty otherwise.
+// Read a command without blocking service(). Return an empty view until
+// complete.
 std::string_view poll_line(std::array<char, LINE_CAP>& buf, std::size_t& len) {
     int ch = getchar_timeout_us(0);
     while (ch != PICO_ERROR_TIMEOUT) {
@@ -253,13 +204,10 @@ std::string_view poll_line(std::array<char, LINE_CAP>& buf, std::size_t& len) {
     return {};
 }
 
-// Bring up one bus. Only the selected transport is initialised, so the other's
-// pads are never claimed and the two cannot contend.
+// Initialise only the selected transport to avoid pad contention.
 void select_bus(pico_bno085::Bno085& imu, std::string_view which) {
-    // Switching buses is a re-strap, which is legitimate because init() drives
-    // the straps with the hub held in reset (HR-3) and then the session
-    // releases it. Release the outgoing transport's interrupt first so its
-    // latch stops claiming a dispatch slot and its pads are no longer serviced.
+    // Release the outgoing transport's interrupt and pads before re-strapping
+    // with NRST asserted (HR-3).
     if (g_selected == &g_i2c) {
         g_i2c.end();
     } else if (g_selected == &g_spi) {
@@ -299,9 +247,7 @@ void print_info() {
            static_cast<unsigned>(pico_bno085::MAX_ENABLED_SENSORS), g_bus_name);
 }
 
-// Each family below reports whether it recognised the line, so handle_command
-// stays a dispatch and the parse-then-act shape is written once per family
-// rather than once per command.
+// Each command group reports whether it recognised the line.
 
 void report(bool ok, const char* done) { printf("# %s\n", ok ? done : "err"); }
 
@@ -322,9 +268,8 @@ bool handle_sensor_command(pico_bno085::Bno085& imu, std::string_view line) {
                "ok");
         return true;
     }
-    // Sensors accumulate across cfg commands, and the desired table survives a
-    // reset by design (AR-3), so a run can only isolate one sensor if the
-    // harness can also take one away.
+    // Disable removes desired sensors that would otherwise survive reset
+    // (AR-3).
     if (line.starts_with("off ") || line.starts_with("flush ")) {
         const bool is_off = line.starts_with("off ");
         std::string_view args =
@@ -381,20 +326,17 @@ bool handle_bare_command(pico_bno085::Bno085& imu, std::string_view line) {
     if (line == "stat") {
         print_stats(imu);
     } else if (line == "heap") {
-        // AR-1: nothing on the steady-state path allocates, so this must not
-        // move once the session is up.
+        // Heap growth must not occur after startup (AR-1).
         printf("# heap armed=%d growth=%lu\n", g_heap.armed() ? 1 : 0,
                static_cast<unsigned long>(g_heap.growth_bytes()));
     } else if (line == "reset") {
-        // Restart via the executable channel; calibration survival is
-        // UNCONFIRMED (FW-2). This is what a boot or recovery measurement
-        // wants.
+        // Calibration survival across executable-channel reset is UNCONFIRMED
+        // (FW-2).
         report(imu.reset().ok(), "reset");
     } else if (line == "cleardcd") {
         report(imu.clear_dcd_and_reset().ok(), "cleardcd");
     } else if (line == "boot") {
-        // begin() restarts the handshake from any state, FAULTED included, so a
-        // wiring fix can be retried without reflashing.
+        // begin() can retry startup from FAULTED without reflashing.
         imu.begin();
         printf("# boot\n");
     } else {
@@ -414,8 +356,7 @@ void handle_command(pico_bno085::Bno085& imu, std::string_view line,
         return;
     }
 
-    // Everything below needs a hub. An error beats a plausible-looking
-    // measurement of nothing.
+    // Commands below require an initialised hub.
     if (g_selected == nullptr) {
         printf("# err no bus selected\n");
         return;
@@ -435,17 +376,14 @@ void handle_command(pico_bno085::Bno085& imu, std::string_view line,
 int main() {
     stdio_init_all();
 
-    // The tracer is pointed at the selected transport by `bus`; until then it
-    // stands in front of one that is never called, because no command before
-    // `bus` reaches it.
+    // No transport is called before bus selects one.
     g_tracer = &g_tracer_object;
     g_tracer->set_sink(pico_bno085::testing::TraceSink(&print_trace, nullptr));
 
     pico_bno085::Bno085& imu = g_imu;
     imu.set_event_sink(pico_sh2::reports::EventSink(&on_event, &g_run));
 
-    // Everything the session will ever allocate is allocated by construction,
-    // so growth measured from here is growth on the steady-state path (AR-1).
+    // Arm after session construction to measure steady-state growth (AR-1).
     g_heap.arm();
 
     printf("# ready-for-bus\n");
@@ -460,8 +398,7 @@ int main() {
         if (g_selected != nullptr) {
             imu.service();
 
-            // Announce every rising edge to READY, so bench.py can time startup
-            // and observe recovery after a reset.
+            // Announce transitions to READY for startup and recovery timing.
             const bool ready = imu.ready();
             if (ready && !was_ready) {
                 printf("# ready\n");

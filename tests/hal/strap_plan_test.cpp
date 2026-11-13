@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: MIT
-// HR-3: the order ControlPins::init() drives the strap and reset lines in.
+// Check reset and strap ordering in ControlPins::init() (HR-3).
 #include "pico_bno085/hal/detail/strap_plan.hpp"
 
 #include <gtest/gtest.h>
@@ -52,7 +52,6 @@ TEST(StrapPlan, SpiHoldsResetAndLeavesSa0ToTheTransport) {
     }
 }
 
-// The plan is a constant expression, so the order is fixed at compile time.
 static_assert(strap_plan(PINS, false, true).steps.at(0).pin == PINS.nrst);
 
 }  // namespace

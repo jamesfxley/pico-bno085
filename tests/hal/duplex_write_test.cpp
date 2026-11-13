@@ -6,7 +6,7 @@
 #include <array>
 #include <cstdint>
 
-// HR-4: receive the longer direction, bounded by staging; pad the shorter.
+// Receive the longer direction within capacity and pad the shorter (HR-4).
 TEST(DuplexWrite, KeepsCoincidentCargoAndPadsTheShorterDirection) {
     const std::array<std::uint8_t, 4> header{12, 0, 3, 7};
     const auto plan = pico_bno085::hal::duplex_write(8, header, 32);

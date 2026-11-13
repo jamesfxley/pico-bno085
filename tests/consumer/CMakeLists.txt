@@ -8,18 +8,9 @@ else()
     project(pico_bno085_consumer_smoke LANGUAGES CXX)
 endif()
 
-# Stands in for a downstream project consuming an installed pico-bno085. Its
-# purpose is to prove the package is reachable by find_package, that the driver
-# façade's headers ship, and that the transitive dependencies resolve --
-# pico_bno085Config.cmake calls find_dependency(pico_sh2) and
-# find_dependency(pico_logging) and find_dependency(pico_util), and the façade's
-# own headers include pico_sh2's.
-# None of that can fail in-tree, where every dependency is a live subproject.
-#
-# This translation unit compiles only against an installed package, so it has no
-# entry in the merged compile database and the repo-wide clang-tidy sweep must
-# skip it. The root .lintignore is what does that; the .cxx extension does not,
-# since the lint gate enumerates .cxx alongside .cpp and .cc.
+# Compile against the installed package to check headers and transitive
+# dependencies. The lint sweep must skip this isolated consumer through
+# .lintignore because it has no entry in the main compile database.
 find_package(pico_bno085 REQUIRED)
 
 if(PICO_SDK_PATH)
@@ -29,13 +20,7 @@ else()
     add_executable(consumer_smoke consumer_smoke.cxx)
 endif()
 
-# pico_bno085::testing is linked as well as pico_bno085::core: the tracing
-# decorator is part of the shipped surface, and an export set that drops it
-# fails only here.
-# Every exported target is named, not only the aggregate. The aggregate pulls
-# most of them in transitively, so a module dropped from the export set would
-# still resolve here and the smoke would report nothing -- which is the one
-# contract this executable exists to prove.
+# Link each public module explicitly to detect a missing exported target.
 target_link_libraries(consumer_smoke PRIVATE
     pico_bno085::core
     pico_bno085::driver

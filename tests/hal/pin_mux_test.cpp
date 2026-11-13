@@ -1,8 +1,6 @@
 // SPDX-License-Identifier: MIT
-// The pin-mux rules the transports' init() refuses a pin by. The oracle is
-// transcribed from the RP2350 datasheet, Table 677 (GPIO Bank 0 Functions),
-// columns F1 (SPI) and F3 (I2C), one row per GPIO, so a formula error in the
-// header fails here rather than agreeing with itself.
+// Pin-mux oracle transcribed from RP2350 Table 677, F1 and F3, so an
+// incorrect predicate cannot agree with its own formula.
 #include "pico_bno085/hal/detail/pin_mux.hpp"
 
 #include <gtest/gtest.h>

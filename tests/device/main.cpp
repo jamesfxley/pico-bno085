@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MIT
-// Device-only reset and shared-wiring bring-up and pin refusal paths (HR-3,
-// AR-3, HR-4).
+// Device checks for shared wiring, reset recovery and invalid pins
+// (HR-3, AR-3, HR-4).
 #include <array>
 #include <charconv>
 #include <cstddef>
@@ -67,7 +67,7 @@ struct FailureText {
     }
 };
 
-// Session buffers and IRQ-registered transports outlive every case frame.
+// Static session buffers and IRQ registrations outlive every case.
 // Only one transport owns the shared wiring at a time.
 struct DeviceState {
     pico_bno085::hal::I2cHalTransport i2c{{}};
@@ -174,8 +174,8 @@ void check_refusal(pico_family::device_test::Run& run, DeviceState& state,
                             : std::string_view("failure detail overflow"));
 }
 
-// The fixed labels, stage literals and bounded integer fields fit in 512 bytes.
-// Only one failure is formatted per case; the buffer begins empty.
+// The 512-byte buffer fits the fixed labels and bounded integer fields.
+// Each case formats at most one failure into an initially empty buffer.
 bool fail_reset_case(DeviceState& state, std::string_view stage,
                      const pico_bno085::Stats& before, int error = 0) {
     const auto after = state.i2c_imu.stats();
@@ -236,9 +236,8 @@ bool reset_restores_sensor(DeviceState& state) {
         return fail_reset_case(state, "reset refused", before,
                                static_cast<int>(reset.error()));
     }
-    // A queued reset leaves READY true until the hub answers. Require its
-    // reset notification and re-apply, including a handshake drained in one
-    // service() call. A pre-reset event cannot satisfy the stream check.
+    // Wait for a reset notification and reapplication, since a queued reset
+    // leaves READY true until answered. Exclude pre-reset events.
     if (!service_until(state, state.i2c_imu, reset_deadline, [&state, &before] {
             const auto after = state.i2c_imu.stats();
             return state.i2c_imu.ready() &&

@@ -1,30 +1,15 @@
 // SPDX-License-Identifier: MIT
-// Consumer-side view of the installed package. Nothing here reaches into the
-// source tree: every symbol below must arrive through the installed
-// pico_bno085::core target, resolved by find_package, so a header the package
-// fails to ship is a compile error in this test rather than a discovery made by
-// the first downstream project.
-//
-// This also exercises the transitive half. pico_bno085Config.cmake calls
-// find_dependency(pico_sh2) and find_dependency(pico_logging) and
-// find_dependency(pico_util), and the driver façade's own headers include
-// pico_sh2's. A dependency that fails to install alongside, or that is missing
-// from the DEPENDENCIES list, fails here and nowhere in-tree.
+// Installed-package consumer. Every symbol must arrive through the package,
+// including transitive pico-sh2, pico-logging and pico-util dependencies.
 #include <cstdint>
 #include <cstdio>
 
 #include "pico_bno085/pico_bno085.hpp"
-// The tracing decorator the package ships for downstream tests. Included so a
-// pico_bno085::testing that left the export set, or whose headers did not
-// install, is a compile error here rather than a downstream discovery.
+// Exercise the installed tracing header and target.
 #include "pico_bno085/testing/tracing_transport.hpp"
 
-// Consumer-side view of the sizing profile. Nothing here defines a profile
-// macro; PICO_SH2_ACTIVE_PROFILE must arrive through the installed target's
-// compile definitions, since PICO_BNO085_PROFILE forwards to pico-sh2.
-// EXPECT_LARGE is set by the harness to the profile it installed, so a profile
-// lost at the install boundary is a compile error here rather than a silently
-// default-sized consumer.
+// PICO_SH2_ACTIVE_PROFILE must come from the installed target.
+// EXPECT_LARGE is the profile selected by the consumer harness.
 using Profile = PICO_SH2_ACTIVE_PROFILE;
 #ifdef EXPECT_LARGE
 static_assert(Profile::MAX_CARGO_LEN == 1024,
@@ -41,20 +26,15 @@ int main() {
     std::printf("pico_bno085 %d.%d.%d\n", pico_bno085::VERSION_MAJOR,
                 pico_bno085::VERSION_MINOR, pico_bno085::VERSION_PATCH);
 
-    // The driver façade is platform-independent: a host consumer supplies its
-    // own transport. Naming the type is enough to prove the header arrived and
-    // that pico_sh2's headers arrived behind it.
+    // Naming Bno085 checks its header and transitive pico-sh2 includes.
     using Driver = pico_bno085::Bno085;
     static_assert(sizeof(Driver) > 0);
 
-    // The shipped decorator. It is header-only, so naming the type is the whole
-    // proof: the header arrived and compiles against the pico_sh2 seam it
-    // decorates, which had to install alongside.
+    // Naming the header-only decorator checks its installed interface.
     using Tracer = pico_bno085::testing::TracingTransport;
     static_assert(sizeof(Tracer) > 0);
 
-    // A pico_sh2 type reached through the façade's own includes, so this fails
-    // if find_dependency(pico_sh2) did not resolve.
+    // Exercise a transitive pico-sh2 type.
     constexpr auto SENSOR =
         static_cast<std::uint8_t>(pico_sh2::reports::SensorId::ROTATION_VECTOR);
     std::printf("rotation vector sensor id = %u\n", SENSOR);

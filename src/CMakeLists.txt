@@ -2,13 +2,11 @@ set(PICO_BNO085_PUBLIC_INCLUDE_DIR ${CMAKE_CURRENT_SOURCE_DIR}/include)
 
 add_subdirectory(driver)
 
-# Test and diagnostic support, in the install export set alongside the driver.
-# Built for firmware too -- the bench example drives it.
+# Installed diagnostic support, also used by the firmware benchmark.
 add_subdirectory(testing)
 
-# The HAL's SDK-free core (split-read compensation, transfer classification)
-# builds everywhere and is host-tested; the peripheral drivers inside it are
-# firmware-only. src/hal/CMakeLists.txt makes that split.
+# The SDK-free HAL core is host-tested. Its peripheral drivers build only
+# for firmware.
 add_subdirectory(hal)
 
 add_library(pico_bno085_core INTERFACE)
@@ -32,8 +30,7 @@ target_link_libraries(pico_bno085_core INTERFACE
     pico_bno085::driver
 )
 
-# The HAL joins the umbrella only in firmware builds; host consumers get the
-# platform-independent driver façade and supply their own transport.
+# Host consumers supply their own transport.
 if(PICO_BNO085_BUILD_FIRMWARE)
     target_link_libraries(pico_bno085_core INTERFACE pico_bno085::hal)
 endif()

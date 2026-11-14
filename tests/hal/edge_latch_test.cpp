@@ -1,6 +1,5 @@
 // SPDX-License-Identifier: MIT
-// AR-2: the edge flag and its timestamp, published so a reader can never
-// observe a half-written value.
+// Publish edge flags and timestamps without torn values (AR-2).
 #include "pico_bno085/hal/edge_latch.hpp"
 
 #include <gtest/gtest.h>
@@ -34,16 +33,12 @@ TEST(EdgeLatch, ConsumeClearsTheFlagAndReturnsTheEdge) {
     EXPECT_TRUE(consumed.had_edge);
     EXPECT_EQ(consumed.edge_us, 500U);
     EXPECT_FALSE(latch.ready());
-    // The events decoded from this transfer are anchored to the edge, so the
-    // timestamp has to outlive the flag.
+    // Event timestamps still use the edge after its flag is consumed.
     EXPECT_EQ(latch.timestamp_us(), 500U);
 }
 
-// AR-2: a read is anchored to the edge consume() returns, not to one asked for
-// before the read. A later edge latched before the read clears the flag is that
-// read's anchor, and the read counts as edged. The order inside consume() --
-// the flag exchanged before the timestamp is loaded -- is not reachable from a
-// host test, which cannot put the handler between the two.
+// A read uses the edge returned by consume() (AR-2). A host test cannot
+// insert the handler between consume()'s flag exchange and timestamp load.
 TEST(EdgeLatch, ConsumeAnchorsTheReadToTheEdgeLatchedBeforeIt) {
     EdgeLatch latch;
     latch.latch(10'000);
@@ -57,8 +52,7 @@ TEST(EdgeLatch, ConsumeAnchorsTheReadToTheEdgeLatchedBeforeIt) {
     EXPECT_EQ(latch.level_fallback_reads(), 0U);
 }
 
-// HR-1: a read with no latched edge behind it is served by the level fallback
-// and anchors to an earlier edge, so it is counted rather than hidden.
+// A fallback read can use an earlier edge and is counted (HR-1).
 TEST(EdgeLatch, ConsumeWithoutAnEdgeCountsALevelFallback) {
     EdgeLatch latch;
     EXPECT_FALSE(latch.consume().had_edge);
@@ -90,10 +84,8 @@ TEST(EdgeLatch, ASecondEdgeReplacesAnUnconsumedOne) {
     EXPECT_EQ(latch.timestamp_us(), 200U);
 }
 
-// HR-5: the span an unserviced assertion opens is what a service-latency
-// figure measures from. The hub retries an assertion left unserviced, so
-// measuring from the newest edge would report the gap since the retry -- a few
-// microseconds -- for exactly the pass that overran.
+// Latency starts at the oldest unserviced edge, including across retries
+// (HR-5).
 TEST(EdgeLatch, ASecondEdgeDoesNotMoveTheSpanStart) {
     EdgeLatch latch;
     latch.latch(100);
@@ -117,10 +109,8 @@ TEST(EdgeLatch, StartsWithNoSpanOpen) {
     EXPECT_EQ(latch.pending_since_us(), 0U);
 }
 
-// HR-6: the hub asserts once per transfer, so an I2C cargo retrieved by a
-// header peek and a cargo read earns two assertions. The second announces the
-// transfer just completed; left latched, it would back the next read as edged
-// and open the span its service latency is measured from.
+// The completed second split-read transfer leaves no edge for a new read
+// (HR-6).
 TEST(EdgeLatch, DiscardingAContinuationAssertionLeavesNothingToService) {
     EdgeLatch latch;
     latch.latch(100);  // the cargo's own assertion
@@ -131,7 +121,6 @@ TEST(EdgeLatch, DiscardingAContinuationAssertionLeavesNothingToService) {
     EXPECT_FALSE(latch.ready());
 }
 
-// It answers no read, so it is not a read served by the level fallback.
 TEST(EdgeLatch, DiscardingAContinuationAssertionCountsNoLevelFallback) {
     EdgeLatch latch;
     latch.latch(100);
@@ -140,8 +129,8 @@ TEST(EdgeLatch, DiscardingAContinuationAssertionCountsNoLevelFallback) {
     EXPECT_EQ(latch.level_fallback_reads(), 0U);
 }
 
-// HR-5: the discarded assertion opened no span, so the next cargo's assertion
-// starts the measurement rather than continuing one that no read answered.
+// The next cargo opens a new latency period after an assertion is discarded
+// (HR-5).
 TEST(EdgeLatch, TheNextEdgeAfterADiscardOpensItsOwnSpan) {
     EdgeLatch latch;
     latch.latch(100);
@@ -153,9 +142,7 @@ TEST(EdgeLatch, TheNextEdgeAfterADiscardOpensItsOwnSpan) {
     EXPECT_EQ(latch.pending_since_us(), 5'000U);
 }
 
-// HR-1: an edge whose line has already risen announced an assertion that has
-// ended, so the handler drops it. Latched, it would back the next read as edged
-// and open the span that read's service latency is measured from.
+// The handler drops edges for assertions that have ended (HR-1).
 TEST(EdgeLatch, AnEdgeWhoseLineHasRisenIsNotLatched) {
     EdgeLatch latch;
     EXPECT_FALSE(latch.latch_if_asserted(1'000, false));
@@ -172,8 +159,7 @@ TEST(EdgeLatch, AnEdgeWhoseLineIsStillAssertedIsLatched) {
     EXPECT_EQ(latch.pending_since_us(), 1'000U);
 }
 
-// HR-1: a dropped edge leaves the span alone, so the next live edge opens its
-// own rather than inheriting one from an assertion already answered.
+// A dropped edge leaves the next live edge free to open its own period (HR-1).
 TEST(EdgeLatch, ADroppedEdgeLeavesTheNextOneItsOwnSpan) {
     EdgeLatch latch;
     (void)latch.latch_if_asserted(1'000, false);
@@ -182,15 +168,14 @@ TEST(EdgeLatch, ADroppedEdgeLeavesTheNextOneItsOwnSpan) {
     EXPECT_TRUE(latch.consume().had_edge);
 }
 
-// AR-2: host API exercise, not proof of 64-bit tearing safety on a 32-bit
-// target. Review checks the seqlock strategy and interrupt/mainline order.
+// Exercise the host API. Tearing safety on a 32-bit target still needs
+// review of the seqlock strategy and interrupt ordering (AR-2).
 TEST(EdgeLatch, ConcurrentReadsNeverSeeATornTimestamp) {
     EdgeLatch latch;
     std::atomic<bool> stop{false};
     std::atomic<std::uint64_t> torn{0};
 
-    // Each value's high and low halves carry the same counter, so any mixture
-    // of two different writes is detectable.
+    // Matching halves make a torn value detectable.
     auto compose = [](std::uint32_t n) {
         return (static_cast<std::uint64_t>(n) << 32U) | n;
     };

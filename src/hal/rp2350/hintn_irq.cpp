@@ -20,31 +20,20 @@ namespace {
 // One entry per concurrently wired hub; a single IMU needs one.
 constexpr std::size_t MAX_LATCHES = 2;
 
-// The latches this core dispatches to, and the GPIO mask currently registered
-// for them.
-//
-// A raw handler rather than gpio_set_irq_enabled_with_callback: that call takes
-// the core's single GPIO callback slot, so a consumer arming any other GPIO
-// interrupt would silently replace this one -- reads would continue on the
-// level fallback while every edge timestamp stopped, anchoring the whole
-// system's events to zero. The raw mechanism claims only the pins named in the
-// mask and leaves the default callback to the consumer (hardware/gpio.h).
-//
-// The mask lives beside the table because the SDK hard-asserts on a pin claimed
-// twice and removes by the mask that was added, so what is registered has to be
-// known exactly rather than recomputed from the table after it has changed.
+// Raw GPIO handlers leave the consumer's default callback available.
+// Keep the registered mask: SDK removal needs the original mask, and
+// registering the same pin twice asserts (hardware/gpio.h).
 struct DispatchTable {
     std::array<HintnLatch*, MAX_LATCHES> latches{};
     std::uint32_t raw_mask = 0;
 };
 
-// The GPIO handler the SDK invokes takes no context argument, so the table it
-// dispatches through has to be reachable from file scope.
+// cppcoreguidelines-avoid-non-const-global-variables: the SDK handler takes
+// no context argument, so its dispatch table needs file scope.
 // NOLINTNEXTLINE(cppcoreguidelines-avoid-non-const-global-variables)
 DispatchTable g_dispatch;
 
-// A raw handler is shared across every GPIO on the core, so it identifies and
-// acknowledges its own pins (hardware/gpio.h).
+// A raw handler acknowledges only the pins it owns (hardware/gpio.h).
 void dispatch() {
     const std::uint64_t edge_us = time_us_64();
     for (HintnLatch* latch : g_dispatch.latches) {
@@ -61,7 +50,6 @@ void dispatch() {
     }
 }
 
-// The pins the registered latches occupy.
 std::uint32_t latched_pin_mask() {
     std::uint32_t mask = 0;
     for (const HintnLatch* latch : g_dispatch.latches) {
@@ -72,17 +60,12 @@ std::uint32_t latched_pin_mask() {
     return mask;
 }
 
-// Bring the registered mask to `mask`, adding, moving or removing the handler
-// as the table requires. A begin() that changes nothing registers nothing,
-// which is what keeps re-initialising a transport from tripping the SDK's
-// duplicate-claim assert.
+// Update the registered mask only when it changes to avoid duplicate claims.
 void install_dispatch(std::uint32_t mask) {
     if (mask == g_dispatch.raw_mask) {
         return;
     }
-    // Bounded and init-time: the window spans two SDK calls, and leaving the
-    // bank enabled across a mask change would let an edge arrive with no
-    // handler claiming it.
+    // Disable the bank while changing handlers so no edge arrives without one.
     const bool was_enabled = irq_is_enabled(IO_IRQ_BANK0);
     irq_set_enabled(IO_IRQ_BANK0, false);
     if (g_dispatch.raw_mask != 0) {
@@ -95,8 +78,7 @@ void install_dispatch(std::uint32_t mask) {
     irq_set_enabled(IO_IRQ_BANK0, was_enabled);
 }
 
-// Claim a dispatch slot. Already-registered latches keep the one they hold, so
-// re-initialising a transport does not exhaust the table.
+// Reuse an existing registration so reinitialisation consumes no new slot.
 bool register_latch(HintnLatch* latch) {
     for (HintnLatch* slot : g_dispatch.latches) {
         if (slot == latch) {
@@ -133,8 +115,7 @@ pico_sh2::Result<void> HintnLatch::begin(std::uint32_t pin) {
     gpio_init(pin);
     gpio_set_dir(pin, GPIO_IN != 0U);
     gpio_pull_up(pin);  // HINTN idles high, asserts low
-    // Ahead of enabling the interrupt: gpio_set_irq_enabled asserts that a
-    // handler is already installed.
+    // Install before enabling: gpio_set_irq_enabled asserts without a handler.
     install_dispatch(latched_pin_mask());
     gpio_set_irq_enabled(pin, GPIO_IRQ_EDGE_FALL, true);
     irq_set_enabled(IO_IRQ_BANK0, true);

@@ -1,14 +1,5 @@
-# Doxygen configuration for the pico-bno085 API reference.
-#
-# Everything that does not vary lives in infra/house/config/Doxyfile.base; only
-# the fields below differ between repositories. Doxygen applies assignments in
-# order, so these win over the include.
-#
-#   doxygen docs/Doxyfile      (output: docs/api/html/index.html, gitignored)
-#
-# HIDE_UNDOC_MEMBERS and HIDE_UNDOC_CLASSES stay NO in the base: with them YES
-# the undocumented-entity warning is suppressed for exactly the entities it
-# exists to report.
+# Repository overrides for infra/house/config/Doxyfile.base.
+# Later assignments override the included defaults.
 
 @INCLUDE_PATH = infra/house/config
 @INCLUDE      = Doxyfile.base

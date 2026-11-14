@@ -1,12 +1,8 @@
 // SPDX-License-Identifier: MIT
 #pragma once
 
-// pico-bno085 umbrella header: the user-facing BNO085 driver for the Raspberry
-// Pi Pico 2 (RP2350). Includes the platform-independent driver façade. The
-// firmware transports (I2C/SPI) live under pico_bno085/hal/ and are included
-// directly by firmware that constructs them.
+// Public driver umbrella. Firmware includes transports from pico_bno085/hal/.
 
-// The umbrella re-exports the driver.
 #include "pico_bno085/driver/bno085.hpp"  // IWYU pragma: export
 
 namespace pico_bno085 {

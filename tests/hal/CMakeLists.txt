@@ -11,8 +11,7 @@ house_cxx_add_module_test(pico_bno085 hal_core
     LIBRARIES Threads::Threads
 )
 
-# Drives the split-read compensation over arbitrary transfer streams. Off by
-# default; needs a Clang toolchain with -fsanitize=fuzzer.
+# Fuzz arbitrary split-read streams. Requires Clang with -fsanitize=fuzzer.
 house_cxx_add_fuzzer(pico_bno085_split_read_fuzz
     PACKAGE pico_bno085
     SOURCE split_read_fuzz.cpp

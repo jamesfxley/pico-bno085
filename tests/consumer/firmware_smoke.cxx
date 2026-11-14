@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: MIT
-// AR-5: compile and link the installed SDK-backed HAL; never run this image.
+// Compile and link the installed SDK HAL without running it (AR-5).
 #include "pico_bno085/hal/i2c_hal_transport.hpp"
 
 int main() {

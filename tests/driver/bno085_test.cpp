@@ -31,14 +31,12 @@ namespace {
 using pico_sh2::reports::SensorId;
 using pico_sh2::testing::FakeHub;
 
-// --- SHTP frame builders (mirroring the pico-sh2 session-test fixtures) ------
-
 std::vector<std::uint8_t> frame(std::uint8_t channel, std::uint8_t seq,
                                 std::vector<std::uint8_t> payload) {
     const std::size_t total = payload.size() + 4;
     std::vector<std::uint8_t> out;
-    // Also what lets GCC 13 see the capacity: without it, _FORTIFY_SOURCE=3 at
-    // -O3 cannot bound the insert below and reports a stringop-overflow.
+    // reserve lets GCC 13 bound insert under _FORTIFY_SOURCE=3 at -O3,
+    // avoiding a stringop-overflow diagnostic.
     out.reserve(total);
     out.push_back(static_cast<std::uint8_t>(total & 0xFFU));
     out.push_back(static_cast<std::uint8_t>((total >> 8U) & 0x7FU));
@@ -48,8 +46,8 @@ std::vector<std::uint8_t> frame(std::uint8_t channel, std::uint8_t seq,
     return out;
 }
 
-// A minimal but valid channel-0 advertisement: SHTP Response 0 (1000-3535
-// §5.1.1.1), then the sensorhub GUID 2 and one tag-0x81 report-length pair.
+// Minimal channel-0 advertisement: response 0, sensorhub GUID 2 and
+// one tag-0x81 report-length pair (1000-3535 §5.1.1.1).
 std::vector<std::uint8_t> advertisement() {
     return {0x00, 0x01, 0x01, 0x02, 0x81, 0x02, 0x05, 0x18};
 }
@@ -63,8 +61,7 @@ std::vector<std::uint8_t> initialize_response(std::uint8_t status) {
     return frame;
 }
 
-// Drive the driver from construction to READY. `re_seq` selects the per-channel
-// sequence number, so the same helper drives a post-reset recovery.
+// Drive startup or recovery to READY using re_seq as the channel sequence.
 void drive_to_ready(FakeHub& hub, Bno085& driver, std::uint8_t re_seq = 0) {
     if (re_seq == 0) {
         driver.begin();
@@ -80,12 +77,10 @@ void drive_to_ready(FakeHub& hub, Bno085& driver, std::uint8_t re_seq = 0) {
     ASSERT_TRUE(driver.ready());
 }
 
-// The report ID (byte 0 of the SHTP payload) of a captured host write.
 std::uint8_t write_report_id(const FakeHub::CapturedWrite& write) {
     return write.frame.at(4);
 }
 
-// Count captured writes that are Set Feature (0xFD) for `sensor`.
 int count_set_feature(const FakeHub& hub, SensorId sensor) {
     int n = 0;
     for (const auto& write : hub.writes()) {
@@ -97,7 +92,7 @@ int count_set_feature(const FakeHub& hub, SensorId sensor) {
     return n;
 }
 
-// --- the driver's own error taxonomy (AR-4) ---------------------------------
+// Driver errors use the local taxonomy (AR-4).
 
 TEST(Bno085Error, MapsEachProtocolCodeToOneADriverCallerCanActOn) {
     EXPECT_EQ(from_sh2(pico_sh2::Sh2Error::NONE), Error::NONE);
@@ -112,8 +107,7 @@ TEST(Bno085Error, MapsEachProtocolCodeToOneADriverCallerCanActOn) {
 }
 
 TEST(Bno085Error, CollapsesTheFramingCodesADriverCallerCannotSeparate) {
-    // Four SHTP/session codes, one recovery: reset the hub. A caller offered
-    // the difference has nothing to do with it.
+    // All four framing errors use hub reset as recovery.
     EXPECT_EQ(from_sh2(pico_sh2::Sh2Error::BAD_HEADER), Error::PROTOCOL);
     EXPECT_EQ(from_sh2(pico_sh2::Sh2Error::CARGO_TOO_LARGE), Error::PROTOCOL);
     EXPECT_EQ(from_sh2(pico_sh2::Sh2Error::REASSEMBLY_DROP), Error::PROTOCOL);
@@ -125,14 +119,13 @@ TEST(Bno085Error, CollapsesTheFramingCodesADriverCallerCannotSeparate) {
 }
 
 TEST(Bno085Error, SuccessIsZeroSoResultOkRestsOnIt) {
-    // pico_util::Result compares the error against E{}, so NONE must be the
-    // value-initialised enumerator or every Result reads as failed.
+    // NONE must be value-initialised because Result compares errors with E{}.
     EXPECT_EQ(static_cast<std::uint8_t>(Error{}), 0U);
     EXPECT_EQ(Error{}, Error::NONE);
     EXPECT_TRUE(Result<void>{}.ok());
 }
 
-// --- lifecycle (TR-1) --------------------------------------------------------
+// Startup records the phase of an expired deadline (TR-1).
 
 TEST(Bno085, StartupReachesReady) {
     FakeHub hub;
@@ -160,7 +153,7 @@ TEST(Bno085, StartupDeadlineFaultsWithDistinctPhase) {
               pico_sh2::StartupPhase::WAIT_ADVERTISEMENT);
 }
 
-// TR-1: the two later phases fault the same way, each recording where it was.
+// The two later phases fault the same way, each recording its phase (TR-1).
 TEST(Bno085, LaterStartupDeadlinesFaultWithTheirOwnPhase) {
     for (const bool initialize_phase : {false, true}) {
         FakeHub hub;
@@ -186,9 +179,9 @@ TEST(Bno085, LaterStartupDeadlinesFaultWithTheirOwnPhase) {
     }
 }
 
-// HR-1: a transport that reports no data is never read. The decorator counts
-// the reads the driver issues through it, which is what a blind poll would
-// raise; a device run cannot tell a blind poll of a present hub from silence.
+// A transport reporting no data is never read (HR-1).
+// Device observations cannot distinguish a blind read of a present hub from
+// silence.
 class CountingTransport final : public pico_sh2::IHalTransport {
    public:
     explicit CountingTransport(FakeHub& inner) : inner_(&inner) {}
@@ -239,16 +232,14 @@ TEST(Bno085, ATransportReportingNoDataIsNeverRead) {
     }
     EXPECT_EQ(counting.reads(), at_ready);
 
-    // And the gate opens: with a transfer waiting, the next service reads it.
     hub.queue_idle_transfer();
     driver.service();
     EXPECT_EQ(counting.reads(), at_ready + 1);
 }
 
-// --- sensor surface + re-enable policy (AR-3) -------------------------------
+// Desired configurations survive startup and recovery (AR-3).
 
-// A caller waiting to see events needs to know whether the hub has been told
-// yet. Both outcomes are ordinary, so neither is an error.
+// Both applied and deferred configurations are successful outcomes.
 TEST(Bno085, EnableReportsWhetherTheHubHasBeenTold) {
     FakeHub hub;
     Bno085 driver(hub);
@@ -265,8 +256,7 @@ TEST(Bno085, EnableReportsWhetherTheHubHasBeenTold) {
     EXPECT_EQ(after.value(), Bno085::EnableState::APPLIED);
 }
 
-// BR-2: a full queue defers rather than fails, because the desire is recorded
-// and a re-apply is scheduled.
+// A full queue defers the recorded configuration for reapplication (BR-2).
 TEST(Bno085, EnableDefersWhenTheQueueIsFull) {
     FakeHub hub;
     Bno085 driver(hub);
@@ -283,7 +273,6 @@ TEST(Bno085, EnableDefersWhenTheQueueIsFull) {
     }
     EXPECT_EQ(last, Bno085::EnableState::DEFERRED);
 
-    // The deferred request reaches the hub once the queue drains.
     const auto deferred = static_cast<SensorId>(
         0x01 +
         static_cast<std::uint8_t>(pico_sh2::ActiveProfile::TX_QUEUE_DEPTH));
@@ -296,7 +285,6 @@ TEST(Bno085, EnableDefersWhenTheQueueIsFull) {
 TEST(Bno085, SensorEnabledBeforeReadyIsAppliedOnReady) {
     FakeHub hub;
     Bno085 driver(hub);
-    // Enabling before READY records desire but sends nothing yet.
     ASSERT_TRUE(driver
                     .enable_sensor(SensorId::ROTATION_VECTOR,
                                    {.report_interval_us = 10'000})
@@ -304,8 +292,7 @@ TEST(Bno085, SensorEnabledBeforeReadyIsAppliedOnReady) {
     EXPECT_EQ(count_set_feature(hub, SensorId::ROTATION_VECTOR), 0);
 
     drive_to_ready(hub, driver);
-    // Reaching READY enqueues the desired sensor; the next service() flushes
-    // it.
+    // The next service() flushes the configuration enqueued on reaching READY.
     driver.service();
     EXPECT_EQ(count_set_feature(hub, SensorId::ROTATION_VECTOR), 1);
     EXPECT_EQ(driver.enabled_count(), 1U);
@@ -355,7 +342,6 @@ TEST(Bno085, DisableDropsDesireAndSendsZeroInterval) {
     EXPECT_EQ(driver.enabled_count(), 0U);
     EXPECT_EQ(driver.desired_config(SensorId::GRAVITY), nullptr);
 
-    // The last Gravity write is a zero-interval (disabling) Set Feature.
     const auto& writes = hub.writes();
     ASSERT_FALSE(writes.empty());
     const auto& last = writes.back();
@@ -377,16 +363,10 @@ TEST(Bno085, DisablingAnUnknownSensorIsANoOp) {
     EXPECT_EQ(hub.writes().size(), writes_before);
 }
 
-// --- TX-queue backpressure (BR-2) -------------------------------------------
+// A full TX queue preserves retryable desired state (BR-2).
 
-// Fill the session TX queue while READY by enabling sensors without letting
-// service() flush it, then enable one more. `first_id` picks a sensor-ID base
-// that avoids colliding with other sensors a test has enabled. Returns the ID
-// of that last sensor, whose immediate send the full queue refused.
-//
-// The overflow is the iteration past the depth: `depth` enables fill the ring
-// exactly and every one of them is accepted, so a loop that stops there never
-// reaches the case (BR-2).
+// Fill the queue without servicing it, then enable one more sensor (BR-2).
+// first_id avoids existing IDs. Return the final sensor's ID.
 std::uint8_t fill_tx_queue(Bno085& driver, std::uint8_t first_id) {
     const std::size_t depth = pico_sh2::ActiveProfile::TX_QUEUE_DEPTH;
     std::uint8_t overflowed = first_id;
@@ -395,9 +375,7 @@ std::uint8_t fill_tx_queue(Bno085& driver, std::uint8_t first_id) {
         auto result = driver.enable_sensor(static_cast<SensorId>(id),
                                            {.report_interval_us = 10'000});
         overflowed = id;
-        // A full queue is not an error here: the desired entry is recorded and
-        // a re-apply scheduled, so the call reports DEFERRED rather than
-        // NO_ROOM.
+        // A recorded configuration with a full queue returns DEFERRED.
         if (!result.ok()) {
             ADD_FAILURE() << "enable_sensor failed rather than deferring: "
                           << static_cast<int>(result.error());
@@ -415,14 +393,12 @@ TEST(Bno085, QueueFullEnableIsRescheduledAndEventuallySent) {
     Bno085 driver(hub);
     drive_to_ready(hub, driver);
 
-    // The overflowing enable is recorded and deferred, so nothing of it has
-    // reached the hub yet.
+    // The deferred configuration has not reached the hub yet.
     const std::uint8_t refused = fill_tx_queue(driver, 0x10);
     ASSERT_NE(driver.desired_config(static_cast<SensorId>(refused)), nullptr);
     EXPECT_EQ(count_set_feature(hub, static_cast<SensorId>(refused)), 0);
 
-    // Draining service() calls flush the queue and run the scheduled re-apply,
-    // so the refused sensor's Set Feature does reach the hub (contract).
+    // Service calls drain the queue and send the deferred configuration.
     for (int i = 0; i < 20; ++i) {
         driver.service();
     }
@@ -438,21 +414,18 @@ TEST(Bno085, DisableKeepsDesiredEntryWhenQueueFull) {
             .ok());
     driver.service();  // flush the enable
 
-    // Fill the queue so the disable's zero-interval Set Feature cannot enqueue.
     fill_tx_queue(driver, 0x10);
     const Result<void> result = driver.disable_sensor(SensorId::GRAVITY);
     EXPECT_FALSE(result.ok());
     EXPECT_EQ(result.error(), Error::NO_ROOM);
-    // The sensor is kept (not silently dropped), so the caller can retry.
     EXPECT_NE(driver.desired_config(SensorId::GRAVITY), nullptr);
 }
 
-// --- enabled-sensor cap (BR-1) ----------------------------------------------
+// A new sensor at capacity evicts no entry (BR-1).
 
 TEST(Bno085, EnableCapRejectsNewSensorsWithoutEviction) {
     FakeHub hub;
     Bno085 driver(hub);
-    // Fill the desired table to the profile cap.
     for (std::size_t i = 0; i < MAX_ENABLED_SENSORS; ++i) {
         auto sensor = static_cast<SensorId>(0x01 + i);
         ASSERT_TRUE(
@@ -460,7 +433,7 @@ TEST(Bno085, EnableCapRejectsNewSensorsWithoutEviction) {
     }
     EXPECT_EQ(driver.enabled_count(), MAX_ENABLED_SENSORS);
 
-    // One more distinct sensor is refused (BR-1) and evicts nothing.
+    // A new sensor beyond capacity is rejected without eviction (BR-1).
     auto overflow_sensor = static_cast<SensorId>(0x01 + MAX_ENABLED_SENSORS);
     auto result =
         driver.enable_sensor(overflow_sensor, {.report_interval_us = 10'000});
@@ -469,14 +442,13 @@ TEST(Bno085, EnableCapRejectsNewSensorsWithoutEviction) {
     EXPECT_EQ(driver.enabled_count(), MAX_ENABLED_SENSORS);
     EXPECT_EQ(driver.stats().config_rejections, 1U);
 
-    // Reconfiguring an already-desired sensor at the cap still succeeds.
     EXPECT_TRUE(driver
                     .enable_sensor(static_cast<SensorId>(0x01),
                                    {.report_interval_us = 1'000})
                     .ok());
 }
 
-// --- reset recovery re-enable (AR-3) ----------------------------------------
+// Desired sensors are reapplied after hub resets (AR-3).
 
 TEST(Bno085, ReEnablesDesiredSensorsAfterHubReset) {
     FakeHub hub;
@@ -494,8 +466,8 @@ TEST(Bno085, ReEnablesDesiredSensorsAfterHubReset) {
     EXPECT_EQ(count_set_feature(hub, SensorId::ROTATION_VECTOR), 1);
     EXPECT_EQ(count_set_feature(hub, SensorId::ACCELEROMETER), 1);
 
-    // The hub spontaneously resets (re-advertises). The session restarts its
-    // handshake; the driver notes the reset.
+    // Readvertisement triggers the session handshake and driver reset
+    // notification.
     hub.queue_transfer(frame(0, 1, advertisement()), 0);
     driver.service();
     EXPECT_FALSE(driver.ready());
@@ -529,10 +501,8 @@ TEST(Bno085, ReEnablesDesiredSensorsAfterAnUnacknowledgedRead) {
     drive_to_ready(hub, driver);
     driver.service();  // flush the initial apply
 
-    // A commanded reset takes the hub off the bus mid-stream, so a read it had
-    // already signalled goes unanswered. That is the same reset the driver
-    // recovers from above, reaching it by the transport rather than by a
-    // re-advertisement, and it must not leave the driver faulted.
+    // A commanded reset can leave a signalled read unanswered. The driver
+    // must not fault while recovering from the absent hub.
     hub.queue_transfer(frame(3, 0, {}), 0);
     hub.fail_next_read(pico_sh2::Sh2Error::BUS_ERROR);
     driver.service();
@@ -550,8 +520,6 @@ TEST(Bno085, ReEnablesDesiredSensorsAfterAnUnacknowledgedRead) {
     EXPECT_EQ(stats.recoveries, 1U);
     EXPECT_EQ(stats.sensors_reenabled, 2U);
 }
-
-// --- calibration / DCD forwarders -------------------------------------------
 
 TEST(Bno085, CommandForwardersRequireReady) {
     FakeHub hub;
@@ -598,8 +566,7 @@ TEST(Bno085, TareNowEmitsCommandWithParams) {
     const auto& last = hub.writes().back();
     EXPECT_EQ(write_report_id(last), pico_sh2::COMMAND_REQUEST_REPORT);
     EXPECT_EQ(last.frame.at(6), pico_sh2::command::TARE);  // cmd byte
-    // Request layout: 0xF2, seq, cmd, P0..P8 -> frame offset 4 +
-    // [0xF2,seq,cmd].
+    // Parameters follow the SHTP header and 0xF2, sequence and command bytes.
     EXPECT_EQ(last.frame.at(7), 0x00U);  // P0 = subcommand tare-now
     EXPECT_EQ(last.frame.at(8), 0x07U);  // P1 = axis bitmap
     EXPECT_EQ(last.frame.at(9), 0x02U);  // P2 = basis
@@ -617,7 +584,7 @@ TEST(Bno085, OnlyOneCommandOutstanding) {
               Error::BUSY);
 }
 
-// --- stats (OR-1) -----------------------------------------------------------
+// Driver counters record their documented events (OR-1).
 
 TEST(Bno085, StatsMirrorSessionAndTrackEnabled) {
     FakeHub hub;
@@ -638,25 +605,22 @@ TEST(Bno085, StatsMirrorSessionAndTrackEnabled) {
     EXPECT_EQ(stats.recoveries, 0U);
 }
 
-// OR-2: every diagnostic event is counted. Logging them is rate limited so a
-// storm cannot put a log line in service() once per event, but the count is
-// what a device run reads, so it must not be rate limited too.
+// Every diagnostic event is counted (OR-2). The count must not share
+// the log's rate limit.
 TEST(Bno085, EveryDiagnosticEventIsCounted) {
     FakeHub hub;
     Bno085 driver(hub);
     drive_to_ready(hub, driver);
     ASSERT_EQ(driver.stats().diag_events, 0U);
 
-    // A command the hub never answers: the deadline expires and the session
-    // reports COMMAND_TIMEOUT.
+    // An unanswered command expires with COMMAND_TIMEOUT.
     ASSERT_TRUE(driver.save_dcd().ok());
     driver.service();
     hub.advance_time(pico_bno085::bno085_timing().command_timeout_us + 1);
     driver.service();
     EXPECT_EQ(driver.stats().diag_events, 1U);
 
-    // A second timeout of the same kind still counts, though it is not logged
-    // again.
+    // A repeated timeout counts even when no longer logged.
     ASSERT_TRUE(driver.save_dcd().ok());
     driver.service();
     hub.advance_time(pico_bno085::bno085_timing().command_timeout_us + 1);
@@ -664,30 +628,23 @@ TEST(Bno085, EveryDiagnosticEventIsCounted) {
     EXPECT_EQ(driver.stats().diag_events, 2U);
 }
 
-// --- randomized soak (OR-1 self-consistency under fault injection) -----------
+// Reset injection preserves counter consistency (OR-1).
 
-// Churn the driver: random enable/disable of a small sensor set interleaved
-// with injected hub resets, asserting the driver's stats invariants hold at
-// every step. Deterministic (fixed seed) so a failure reproduces. Selected by
-// name -- `ctest -R Soak` -- rather than by a ctest label, which is why the
-// name carries the word.
+// Reproducible random enables, disables and resets exercise stats invariants.
+// The weekly job selects this test with ctest -R Soak.
 TEST(Bno085, SoakStatsRemainConsistentUnderResetInjection) {
     FakeHub hub;
     Bno085 driver(hub);
     drive_to_ready(hub, driver);
 
-    // Per-channel inbound sequence numbers; seq 0 was consumed by
-    // drive_to_ready.
+    // drive_to_ready consumed inbound sequence 0 on each channel.
     std::uint8_t adv_seq = 1;
     std::uint8_t exec_seq = 1;
     std::uint8_t ctrl_seq = 1;
 
-    // The weekly job runs this far longer than a per-push run can afford.
-    // Deterministic either way: the same seed, just more of it.
+    // The weekly job uses the same seed with more iterations.
     int iterations = 400;
-    // getenv is flagged as thread-unsafe. This runs once at the top of a test
-    // body, before anything in the suite starts a thread, and the value is read
-    // rather than modified.
+    // concurrency-mt-unsafe: getenv reads once before the suite starts threads.
     // NOLINTNEXTLINE(concurrency-mt-unsafe)
     if (const char* env = std::getenv("PICO_BNO085_SOAK_ITERATIONS")) {
         const std::string_view text{env};
@@ -700,9 +657,7 @@ TEST(Bno085, SoakStatsRemainConsistentUnderResetInjection) {
         }
     }
 
-    // A constant seed is the point: the soak has to replay identically when it
-    // fails, and the nightly job differs from a per-push run only in how many
-    // iterations it takes, not in which ones.
+    // cert-msc51-cpp: a fixed seed makes a soak failure reproducible.
     // NOLINTNEXTLINE(cert-msc51-cpp)
     std::mt19937 rng(0xB0085);
     auto pick_sensor = [&]() {
@@ -717,11 +672,8 @@ TEST(Bno085, SoakStatsRemainConsistentUnderResetInjection) {
     for (int i = 0; i < iterations; ++i) {
         const int action = static_cast<int>(rng() % 10);
         if (action < 4) {
-            // Discarded deliberately: this soak drives the state machine with
-            // random traffic, and a refused enable is one of the outcomes under
-            // test rather than a failure of it -- BR-2 makes queue-full
-            // recoverable, and the assertions after the loop are what check the
-            // driver came back. The cast says so at the site.
+            // A full queue is an expected random outcome. Later assertions
+            // check recovery after the deferred enable (BR-2).
             static_cast<void>(driver.enable_sensor(
                 pick_sensor(),
                 {.report_interval_us =
@@ -732,7 +684,6 @@ TEST(Bno085, SoakStatsRemainConsistentUnderResetInjection) {
         } else if (action < 9) {
             driver.service();  // flush any pending cargoes
         } else {
-            // Inject a spontaneous hub reset and complete the handshake again.
             hub.queue_transfer(frame(0, adv_seq++, advertisement()), 0);
             driver.service();
             hub.queue_transfer(frame(1, exec_seq++, {0x01}), 0);
@@ -743,24 +694,19 @@ TEST(Bno085, SoakStatsRemainConsistentUnderResetInjection) {
         driver.service();
 
         const Stats stats = driver.stats();
-        // The driver never faults on well-formed traffic.
         ASSERT_FALSE(driver.faulted());
-        // Recoveries can never outrun the resets that triggered them.
         ASSERT_LE(stats.recoveries, stats.hub_resets);
-        // The desired table stays within the cap and matches the live count.
         ASSERT_LE(stats.enabled_sensors, MAX_ENABLED_SENSORS);
         ASSERT_EQ(stats.enabled_sensors, driver.enabled_count());
     }
 
-    // Every injected reset was observed, and each was recovered (the loop
-    // completes the handshake immediately after injecting).
+    // Each injected reset completes its handshake in the loop.
     EXPECT_EQ(driver.stats().hub_resets, injected_resets);
     EXPECT_EQ(driver.stats().recoveries, injected_resets);
     EXPECT_TRUE(driver.ready());
 }
 
-// 1000-3625 §6.5.2: the options a caller means, turned into the flags byte the
-// feature report carries.
+// Sensor options encode the feature flags byte (1000-3625 §6.5.2).
 TEST(Bno085, SensorOptionsBecomeTheFeatureFlags) {
     const Bno085::SensorOptions plain;
     EXPECT_EQ(plain.flags(), 0U);
@@ -795,7 +741,6 @@ TEST(Bno085, WakeOptionReachesTheHubInTheSetFeature) {
     ASSERT_TRUE(driver.enable_sensor(SensorId::ACCELEROMETER, options).ok());
     driver.service();
 
-    // Find the Set Feature and check the flags byte and both intervals.
     bool found = false;
     for (const auto& write : hub.writes()) {
         const auto& frame = write.frame;
@@ -816,12 +761,8 @@ TEST(Bno085, WakeOptionReachesTheHubInTheSetFeature) {
     EXPECT_TRUE(found);
 }
 
-// A restart using the executable-channel command; calibration survival is
-// UNCONFIRMED (FW-2).
-//
-// The whole re-handshake is drained inside one service() here, so the session
-// never appears not-ready to the driver. Keying the re-apply on that edge alone
-// would leave the hub streaming nothing while the desired table said otherwise.
+// Calibration survival across executable-channel reset is UNCONFIRMED (FW-2).
+// A handshake completed within one service() does not expose a not-ready edge.
 TEST(Bno085, ResetRestartsTheHandshakeAndReEnablesSensors) {
     FakeHub hub;
     Bno085 driver(hub);
@@ -835,8 +776,7 @@ TEST(Bno085, ResetRestartsTheHandshakeAndReEnablesSensors) {
     ASSERT_TRUE(driver.reset().ok());
     driver.service();
 
-    // The hub restarts and re-announces itself; the driver recovers and
-    // re-applies what was asked for (AR-3).
+    // Readvertisement triggers recovery and sensor reapplication (AR-3).
     drive_to_ready(hub, driver, /*re_seq=*/1);
     driver.service();
 
@@ -844,8 +784,7 @@ TEST(Bno085, ResetRestartsTheHandshakeAndReEnablesSensors) {
     EXPECT_EQ(driver.stats().recoveries, 1U);
     EXPECT_GT(driver.stats().sensors_reenabled, 0U);
     EXPECT_EQ(driver.enabled_count(), 1U);
-    // Re-applied to the hub, not only counted: once before the reset, once
-    // after it.
+    // Check actual Set Feature traffic before and after reset.
     EXPECT_EQ(count_set_feature(hub, SensorId::ROTATION_VECTOR), 2);
 }
 

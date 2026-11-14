@@ -17,11 +17,9 @@ struct DuplexWrite {
     bool continuation;     ///< Inbound header's continuation bit.
 };
 
-/// Plan padding per 1000-3535 2.3.1 and simultaneous exchange per 3.3.
-/// \param frame outbound frame length, including its header.
-/// \param header four inbound header bytes.
-/// \param capacity available staging bytes, at least four.
-/// \return byte counts and inbound-header classification.
+/// Plan SPI padding and simultaneous exchange (1000-3535 §§2.3.1, 3.3).
+/// \param frame outbound frame length in bytes, including the header.
+/// \param capacity staging capacity in bytes, at least four.
 [[nodiscard]] inline DuplexWrite duplex_write(
     std::size_t frame, std::span<const std::uint8_t, 4> header,
     std::size_t capacity) {

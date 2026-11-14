@@ -2,18 +2,8 @@
 #pragma once
 
 /// \file tracing_transport.hpp
-/// A transport decorator that reports the raw bytes of every transfer.
-///
-/// The session talks to the hub through one seam, so that seam is the only
-/// place the whole conversation is visible. When a hub misbehaves — a cargo
-/// that will not parse, a handshake that stalls — the wire is the evidence, and
-/// without this the only way to see it is to edit a transport and reflash.
-///
-/// The bytes go to a sink rather than to stdout: library code has no business
-/// choosing an output, and a caller that formats them has to accept that
-/// printing inside service() costs time the next deadline may need.
-///
-/// Free of the Pico SDK: it decorates the interface, not a bus.
+/// Transfer tracing through a caller-supplied sink. Printing inside service()
+/// can delay the next transfer.
 
 #include <cstdint>
 #include <span>
@@ -34,24 +24,17 @@ enum class TraceDirection : std::uint8_t {
 struct TraceRecord {
     /// Which way the transfer moved.
     TraceDirection direction = TraceDirection::READ;
-    /// The bytes moved. Empty when \ref error is set: a read that failed moved
-    /// nothing the caller should read.
-    ///
-    /// **Borrowed for the duration of the sink call.** The span aliases the
-    /// buffer the transfer used — the session's staging buffer on a read, the
-    /// caller's frame on a write — and neither survives the call. This struct
-    /// is a copyable aggregate, so copying the record by value copies a span
-    /// that will dangle; a sink that keeps anything must copy the *bytes*.
+    /// Transfer bytes. A read error carries nothing a caller should read.
+    /// A write error retains its frame. The span is borrowed during the sink
+    /// call. A sink retaining data must copy the bytes.
     std::span<const std::uint8_t> bytes;
     /// The transfer's error, or NONE.
     pico_sh2::Sh2Error error = pico_sh2::Sh2Error::NONE;
-    /// Successful read's transport HINTN edge, in microseconds.
-    /// Zero on writes and errors; copied from ReceivedTransfer::intn_edge_us.
+    /// Successful read's HINTN edge in microseconds. Zero on writes and errors.
     std::uint64_t intn_edge_us = 0;
 };
 
-/// Where traced transfers are reported. Runs inside service(), and the record
-/// it is handed does not outlive the call — see TraceRecord::bytes.
+/// Transfer sink, called inside service(). Records are borrowed for the call.
 using TraceSink = pico_util::Callback<void(const TraceRecord&)>;
 
 /// Wraps another transport and reports every transfer to a sink.
@@ -64,17 +47,10 @@ class TracingTransport final : public pico_sh2::IHalTransport {
     /// Set where traced transfers are reported.
     void set_sink(TraceSink sink) { sink_ = sink; }
 
-    /// Point the decorator at a different transport. For a harness that picks
-    /// its bus at run time and so cannot bind one at construction.
-    ///
-    /// \param inner the transport to decorate from now on.
+    /// Select a different transport.
     void set_inner(pico_sh2::IHalTransport& inner) { inner_ = &inner; }
 
-    /// Turn tracing on or off. It is off until asked for: the sink runs inside
-    /// service(), between a transfer and the next one the hub is waiting to be
-    /// read.
-    ///
-    /// \param on whether to report transfers.
+    /// Enable or disable tracing. Initially off.
     void set_tracing(bool on) { tracing_ = on; }
 
     /// Whether tracing is on.
@@ -83,10 +59,8 @@ class TracingTransport final : public pico_sh2::IHalTransport {
     /// Forwards to the decorated transport.
     bool data_ready() override { return inner_->data_ready(); }
 
-    /// Reads through the decorated transport, then reports the bytes it moved.
-    ///
-    /// \param dst staging span for the transfer.
-    /// \return the decorated transport's result, unchanged.
+    /// Read and trace through the inner transport.
+    /// \return the inner transport's result unchanged.
     pico_sh2::Result<pico_sh2::ReceivedTransfer> read_transfer(
         std::span<std::uint8_t> dst) override {
         auto result = inner_->read_transfer(dst);
@@ -104,10 +78,8 @@ class TracingTransport final : public pico_sh2::IHalTransport {
         return result;
     }
 
-    /// Writes through the decorated transport, then reports the frame.
-    ///
-    /// \param frame the bytes to send.
-    /// \return the decorated transport's result, unchanged.
+    /// Write and trace through the inner transport.
+    /// \return the inner transport's result unchanged.
     pico_sh2::Result<void> write_transfer(
         std::span<const std::uint8_t> frame) override {
         auto result = inner_->write_transfer(frame);

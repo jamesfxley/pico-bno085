@@ -2,19 +2,8 @@
 #pragma once
 
 /// \file bno085.hpp
-/// User-facing BNO085 driver façade. It owns a pico_sh2::Session over a
-/// supplied IHalTransport (built separately for I2C or SPI) and adds the device
-/// policy the protocol layer deliberately leaves to the consumer: a
-/// desired-sensor table that survives a hub reset (AR-3 re-enable), an
-/// enabled-sensor cap (BR-1), the calibration/DCD command forwarders, a
-/// normative Stats set (OR-1), and a bridge from the session's diagnostics hook
-/// to pico_logging.
-///
-/// Host-testable: the façade is platform-independent and is driven against
-/// pico_sh2::testing::FakeHub in the unit tests; only the transports it is
-/// handed are firmware-specific. Every IHalTransport call happens inside
-/// begin() or service() (never from an interrupt), matching the session's
-/// contract.
+/// Device policy over pico_sh2::Session: reset recovery, sensor capacity and
+/// counters (AR-3, BR-1, OR-1). Transport calls run in begin() or service().
 
 #include <cstddef>
 #include <cstdint>
@@ -35,14 +24,7 @@
 
 namespace pico_bno085 {
 
-/// Failures this driver reports (AR-4).
-///
-/// Its own rather than pico-sh2's. The protocol library's taxonomy is right for
-/// the protocol layer, but re-exporting it puts SHTP framing enumerators in
-/// front of a caller who has no separate response to them, and lets an append
-/// there change this driver's contract without this repository seeing it. The
-/// codes below are the distinctions a driver caller can actually act on;
-/// from_sh2() collapses the rest.
+/// Driver errors, mapped from pico-sh2 by from_sh2() (AR-4).
 enum class Error : std::uint8_t {
     /// Success. Zero, which is what Result::ok() compares against.
     NONE = 0,
@@ -50,36 +32,29 @@ enum class Error : std::uint8_t {
     BUS_ERROR,
     /// The hub did not answer within the deadline.
     TIMEOUT,
-    /// The session is not READY for it: called before the handshake completed,
-    /// or cut off by a hub reset that restarted the handshake.
+    /// The handshake is incomplete or has restarted after a hub reset.
     NOT_READY,
-    /// The hub or the protocol layer broke SH-2 or SHTP: a malformed header, a
-    /// cargo that will not frame, a dropped reassembly, or a response out of
-    /// sequence. One code, because the answer to all four is the same -- reset
-    /// the hub and start the handshake again.
+    /// Malformed framing, dropped reassembly or an out-of-sequence response.
+    /// Recovery uses a hub reset and a new handshake.
     PROTOCOL,
     /// A command or FRS operation is already in flight.
     BUSY,
-    /// Nothing has room for the request: the TX queue is full, or a
-    /// fixed-capacity table is. Recoverable by retrying once the queue drains
-    /// (BR-2).
+    /// The TX queue or a fixed-capacity table is full.
+    /// A full queue can be retried after it drains (BR-2).
     NO_ROOM,
-    /// Not supported in this build or profile, including a new sensor that
-    /// would take the enabled set past the cap (BR-1).
+    /// The build or profile does not support the request, including a new
+    /// sensor beyond the enabled-sensor cap (BR-1).
     UNSUPPORTED,
     /// The caller passed an out-of-range or malformed argument.
     INVALID_ARGUMENT,
 };
 
-/// This driver's Result: a value or an Error. No exceptions and no heap, and
-/// [[nodiscard]] at class scope, so a dropped failure is a compile error.
+/// A value or driver error, without exceptions or heap allocation.
+/// Discarding a result fails compilation under the required warning flags.
 template <typename T>
 using Result = pico_util::Result<T, Error>;
 
-/// Map a pico-sh2 error onto this driver's taxonomy.
-///
-/// \param error the protocol layer's code.
-/// \return the driver code a caller can act on.
+/// Map a protocol error to a driver error.
 constexpr Error from_sh2(pico_sh2::Sh2Error error) {
     switch (error) {
         case pico_sh2::Sh2Error::NONE:
@@ -106,20 +81,12 @@ constexpr Error from_sh2(pico_sh2::Sh2Error error) {
         case pico_sh2::Sh2Error::INVALID_ARGUMENT:
             return Error::INVALID_ARGUMENT;
     }
-    // Unreachable from a correctly built tree, and deliberately not a default:
-    // label. The switch names every enumerator and carries no default, so a
-    // code appended by a later pico-sh2 is a -Wswitch error under -Werror --
-    // this repository is told, at build time, that a dependency changed its
-    // taxonomy. That is the guarantee (AR-4); this return only keeps the
-    // function well-formed for a value outside the enumeration, which a fixed
-    // underlying type permits to exist and nothing here produces.
+    // No default: a new pico-sh2 enumerator fails -Wswitch under -Werror
+    // (AR-4). The return handles values outside the enumeration.
     return Error::PROTOCOL;
 }
 
-/// Map a valueless pico-sh2 Result onto this driver's.
-///
-/// \param result the protocol layer's result.
-/// \return the same outcome in this driver's taxonomy.
+/// Map a valueless protocol result to a driver result.
 constexpr Result<void> from_sh2(const pico_sh2::Result<void>& result) {
     if (result.ok()) {
         return {};
@@ -127,24 +94,17 @@ constexpr Result<void> from_sh2(const pico_sh2::Result<void>& result) {
     return from_sh2(result.error());
 }
 
-/// \name The BNO085's own startup characteristics
-/// pico-sh2 carries none of these: it is a protocol library, and how long a
-/// part is held in reset, how long it takes to boot, and how quickly it answers
-/// are properties of the silicon, not of SH-2 or SHTP. This driver is the
-/// BNO085's, so they live here.
+/// \name Startup timing
 /// \{
 
-/// NRST need only be pulsed (1000-3927 §6.5.3, tnrst); 2 ms is a comfortable
-/// floor for a host that cannot time a shorter pulse precisely.
+/// Reset hold in microseconds (1000-3927 §6.5.3, tnrst).
 inline constexpr std::uint64_t BNO085_RESET_HOLD_US = 2'000;
-/// t1 is a 90 ms minimum, with no maximum (1000-3927 §6.5.3).
-/// The boot delay and phase deadlines are wedge guards, not derived bounds.
+/// Boot wait in microseconds. This is a timeout guard, not a datasheet maximum
+/// (1000-3927 §6.5.3).
 inline constexpr std::uint64_t BNO085_BOOT_DELAY_US = 100'000;
-/// A generous multiple of the boot delay, so a slow or busy hub is not failed
-/// for still coming up.
+/// Startup phase timeout in microseconds.
 inline constexpr std::uint64_t BNO085_STARTUP_PHASE_TIMEOUT_US = 200'000;
-/// A command or FRS operation unanswered in half a second is treated as lost
-/// rather than waited on.
+/// Command and FRS response timeout in microseconds.
 inline constexpr std::uint64_t BNO085_TRANSACTION_TIMEOUT_US = 500'000;
 
 /// \}
@@ -162,12 +122,7 @@ constexpr pico_sh2::SessionTiming bno085_timing() {
     };
 }
 
-/// The BNO085 advertises SH-2's channels at base 1 — device 1, control 2,
-/// inputNormal 3, inputWake 4, inputGyroRv 5 — observed on the part itself.
-/// Seeding them lets a reset be requested before the hub has ever advertised,
-/// which is the way out of a session stuck short of READY (SR-7). The
-/// advertisement overrides the seed, so a part that moved its base is still
-/// followed.
+/// Seeded SH-2 channel base (1000-3927 §1.3.1) (SR-7).
 inline constexpr std::uint8_t BNO085_CHANNEL_BASE = 1;
 
 /// The seeded channel map for this part.
@@ -183,42 +138,25 @@ constexpr pico_sh2::shtp::ChannelMap bno085_channels() {
     return map;
 }
 
-/// Concurrently enabled sensors the driver tracks, from the active sizing
-/// profile. The desired-sensor table and the session's granted-config storage
-/// are sized from the same knob so the driver can never desire more than the
-/// session can hold (BR-1).
+/// Enabled-sensor capacity from the session's active profile (BR-1).
 inline constexpr std::size_t MAX_ENABLED_SENSORS =
     pico_sh2::ActiveProfile::MAX_ENABLED_SENSORS;
 
-/// The policy counters the driver is solely responsible for (OR-1).
-///
-/// The protocol and framing counters belong to the session and are read through
-/// counters(); the transport's own belong to whichever transport was handed in,
-/// which the caller already holds. Copying either set in here would make
-/// pico-sh2's counter list part of this driver's API, so adding a counter there
-/// would be a breaking change here.
+/// Counters owned by the driver (OR-1).
 struct Stats {
-    /// Hub resets the session reported to the driver (SR-5), including those
-    /// this driver asked for through reset() or clear_dcd_and_reset().
-    ///
-    /// The session reports a reset from the re-advertisement, which carries no
-    /// mark of what caused it. Correlating one with a request the driver made
-    /// would mean a spontaneous reset arriving between the request and the
-    /// flush being counted as the requested one and so not counted at all, and
-    /// undercounting a real fault is worse than counting a deliberate reset.
+    /// Reported hub resets, including reset() and clear_dcd_and_reset()
+    /// requests (SR-5).
     std::uint32_t hub_resets = 0;
-    /// Times the driver re-reached READY after a reset and re-applied its
-    /// desired sensors. Never exceeds \ref hub_resets.
+    /// Returns to READY after a reset. Never exceeds \ref hub_resets.
     std::uint32_t recoveries = 0;
-    /// Set Feature reports re-issued during those recoveries (cumulative across
-    /// recoveries; the initial post-startup apply is not counted here).
+    /// Set Feature reports reissued during recovery, excluding initial startup.
     std::uint32_t sensors_reenabled = 0;
-    /// enable_sensor() calls refused because the desired table was full (BR-1).
+    /// enable_sensor() calls rejected because the desired table was full
+    /// (BR-1).
     std::uint32_t config_rejections = 0;
     /// Sensors currently in the desired table.
     std::uint8_t enabled_sensors = 0;
-    /// Diagnostic events the session reported (OR-2). Logging them is rate
-    /// limited; the count is not.
+    /// All session diagnostic events, including those not logged (OR-2).
     std::uint32_t diag_events = 0;
 };
 
@@ -228,9 +166,8 @@ class Bno085 {
     /// \param hal the transport to drive. It must outlive this object.
     explicit Bno085(pico_sh2::IHalTransport& hal);
 
-    /// \name Not copyable or movable
-    /// The session's sinks are bound to this object, so it cannot be copied or
-    /// moved without leaving them pointing at the original.
+    /// \name Copy and move
+    /// The session sinks retain this object's address.
     /// \{
     Bno085(const Bno085&) = delete;
     Bno085& operator=(const Bno085&) = delete;
@@ -240,18 +177,12 @@ class Bno085 {
 
     ~Bno085() = default;
 
-    // --- lifecycle -----------------------------------------------------------
-
-    /// Kick the non-blocking startup sequence (reset -> advertisement ->
-    /// reset-complete -> initialize). Returns once NRST is asserted; drive
-    /// service() to reach ready(). Each startup phase is deadline-bounded by
-    /// the session and surfaces a distinct fault (TR-1).
+    /// Start without blocking and return with NRST asserted.
+    /// Each startup phase has a distinct deadline fault (TR-1).
     void begin();
 
-    /// Pump the session one iteration: called every main-loop pass (after a
-    /// HINTN wake, or polled). On the transition to READY — initial startup or
-    /// recovery after a spontaneous hub reset — the driver re-applies every
-    /// desired sensor (AR-3).
+    /// Advance the session on each main-loop pass.
+    /// Desired sensors are reapplied after startup and reset recovery (AR-3).
     void service();
 
     /// Whether startup has completed and the hub is ready for Set Feature.
@@ -268,41 +199,33 @@ class Bno085 {
     /// The fault, when faulted().
     [[nodiscard]] Error fault() const { return from_sh2(session_.fault()); }
 
-    /// How far startup got. While faulted() this is the phase the fault
-    /// happened in.
+    /// The current startup phase, or the phase where the session faulted.
     [[nodiscard]] pico_sh2::StartupPhase startup_phase() const {
         return session_.startup_phase();
     }
-
-    // --- sensor surface ------------------------------------------------------
 
     /// Set where decoded sensor events are delivered. Forwarded to the session.
     void set_event_sink(pico_sh2::reports::EventSink sink) {
         session_.set_event_sink(sink);
     }
 
-    /// How a sensor should run, in the terms the feature report defines
-    /// (1000-3625 §6.5.1). A raw flags byte is the wire form; this is what a
-    /// caller means.
+    /// How a sensor should run (1000-3625 §6.5.1).
     struct SensorOptions {
         /// Nominal period between reports (µs). Zero disables the sensor.
         std::uint32_t report_interval_us = 0;
-        /// Batch window (µs). Zero delivers each report as it is produced;
-        /// non-zero lets the hub group them, and flush() forces an early
-        /// delivery.
+        /// Batch window in microseconds. Zero sends reports as produced; a
+        /// non-zero window is the maximum delivery delay, and flush() delivers
+        /// early.
         std::uint32_t batch_interval_us = 0;
-        /// Deliver on the wake channel, which is what a host in a low-power
-        /// state watches (feature-flag bit 2).
+        /// Deliver on the low-power host's wake channel (feature-flag bit 2).
         bool wake = false;
         /// Keep the sensor running while the hub is in "sleep" (bit 3).
         bool always_on = false;
-        /// Report only when the value moves by more than this much, in the
-        /// sensor's own units and Q point.
+        /// Change threshold in the sensor's units and Q point.
         std::uint16_t change_sensitivity = 0;
         /// Whether \ref change_sensitivity applies (feature-flag bit 1).
         bool change_sensitivity_enabled = false;
-        /// Whether it is a fraction of the value rather than an absolute step
-        /// (bit 0).
+        /// Whether change_sensitivity is relative to the value (bit 0).
         bool change_sensitivity_relative = false;
 
         /// The wire flags byte these options mean.
@@ -328,44 +251,30 @@ class Bno085 {
     enum class EnableState : std::uint8_t {
         /// Sent to the hub on this call.
         APPLIED,
-        /// Recorded and will be sent by a later service(): either the session
-        /// is
-        /// not READY yet, or the TX queue was full. Both are ordinary, so they
-        /// are not errors — but a caller waiting to see events needs to know
-        /// the
-        /// hub has not been told yet.
+        /// Recorded for a later service() because the session is not READY or
+        /// the TX queue is full.
         DEFERRED,
     };
 
-    /// Enable or reconfigure a sensor. The desired configuration is recorded so
-    /// it is re-applied after a hub reset, and — when the session is already
-    /// READY and the TX queue has room — sent immediately.
-    ///
+    /// Record a sensor configuration for immediate send or later reapplication.
     /// \param sensor the sensor to configure.
-    /// \param options how it should run; a zero report_interval_us disables.
-    /// \return UNSUPPORTED if a new sensor would exceed the profile's
-    ///         enabled-sensor cap (BR-1), without evicting any active sensor.
+    /// \param options how it should run; zero report_interval_us disables.
+    /// \return UNSUPPORTED for a new sensor beyond the cap. No sensor is
+    /// evicted (BR-1).
     Result<EnableState> enable_sensor(pico_sh2::reports::SensorId sensor,
                                       const SensorOptions& options);
 
-    /// Enable or reconfigure a sensor from a full feature configuration.
-    ///
-    /// \param config the feature configuration to record and send.
+    /// Record and send a complete feature configuration.
     Result<EnableState> enable_sensor(const pico_sh2::FeatureConfig& config);
 
-    /// Disable a sensor: when READY, send a zero-interval Set Feature and, once
-    /// it is accepted, drop the sensor from the desired table.
-    ///
-    /// \param sensor the sensor to disable.
-    /// \return ok, including when the sensor was not enabled. NO_ROOM keeps
-    ///         the entry so the caller can retry, rather than leaving the
-    ///         sensor streaming with no record to disable it.
+    /// Disable a sensor and remove its desired entry after acceptance when
+    /// READY.
+    /// \return Success, including when the sensor is absent.
+    /// NO_ROOM keeps the entry for a retry.
     Result<void> disable_sensor(pico_sh2::reports::SensorId sensor);
 
-    /// The current desired configuration for a sensor.
-    ///
-    /// \param sensor the sensor to look up.
-    /// \return the configuration, or nullptr when the sensor is not enabled.
+    /// Look up a desired configuration.
+    /// \return nullptr if the sensor is not enabled.
     [[nodiscard]] const pico_sh2::FeatureConfig* desired_config(
         pico_sh2::reports::SensorId sensor) const;
 
@@ -377,25 +286,16 @@ class Bno085 {
         session_.set_flush_sink(sink);
     }
 
-    /// Ask the hub to send a sensor's outstanding batched data now rather than
-    /// waiting for its batch interval (1000-3625 §6.5.6). The hub may flush
-    /// other sensors too; each one produces a Flush Completed at the flush
-    /// sink.
-    ///
-    /// \param sensor the sensor to flush.
+    /// Request outstanding batched data now (1000-3625 §6.5.6).
+    /// The hub can flush other sensors too. Each reports completion to the
+    /// flush sink.
     Result<void> flush(pico_sh2::reports::SensorId sensor) {
         return from_sh2(session_.force_flush(sensor));
     }
 
-    // --- calibration / DCD forwarders ---------------------------------------
-
-    /// Which axes a tare rotates about (1000-3625 §6.4.3.1, P1).
-    ///
-    /// The manual documents two bitmaps as supported rather than the whole
-    /// eight, so these are the values rather than a bitmap a caller assembles:
-    /// an unsupported combination is not a case the hub answers.
+    /// Supported tare axes (1000-3625 §6.4.3.1, P1).
     enum class TareAxes : std::uint8_t {
-        /// X, Y and Z. Reorients every motion output.
+        /// Rotation about X, Y and Z. Affected outputs depend on TareBasis.
         ALL = 0x07,
         /// Z alone: changes heading, leaves tilt.
         Z_ONLY = 0x04,
@@ -411,8 +311,7 @@ class Bno085 {
         ARVR_STABILIZED_GAME_ROTATION_VECTOR = 5,
     };
 
-    /// What a tare should do. Two enumerations rather than two adjacent
-    /// integers, so neither field can be passed where the other belongs.
+    /// What a tare should do.
     struct TareOptions {
         /// Axes to rotate about.
         TareAxes axes = TareAxes::ALL;
@@ -420,10 +319,8 @@ class Bno085 {
         TareBasis basis = TareBasis::ROTATION_VECTOR;
     };
 
-    /// Which motion-engine calibration routines the hub should run (1000-3625
-    /// §6.4.6.1, P0-P2). Named fields rather than positional flags: the three
-    /// are otherwise interchangeable at a call site and a swap produces a
-    /// well-formed command the hub accepts.
+    /// Which calibration routines the hub should run (1000-3625 §6.4.6.1,
+    /// P0-P2).
     struct CalibrationOptions {
         /// Accelerometer calibration (P0).
         bool accel = false;
@@ -433,11 +330,9 @@ class Bno085 {
         bool mag = false;
     };
 
-    /// \name Calibration and DCD forwarders
-    /// Thin wrappers over the SH-2 command channel (0xF2). Each returns
-    /// NOT_READY before the session is READY, BUSY if a command is already
-    /// outstanding, and NO_ROOM if the TX queue is full. The command response
-    /// is delivered to the command sink.
+    /// \name Calibration and DCD commands
+    /// Commands return NOT_READY before READY, BUSY while one is outstanding,
+    /// and NO_ROOM when the TX queue is full. Responses go to the command sink.
     /// \{
 
     /// Set where command responses are delivered.
@@ -445,76 +340,59 @@ class Bno085 {
         session_.set_command_sink(sink);
     }
 
-    /// Tare the reference frame now (Tare, subcommand 0; SH-2 Reference Manual
-    /// 1000-3625 §6.4.3.1).
-    ///
-    /// \param options which axes to tare and against which rotation vector.
+    /// Tare the reference frame now (1000-3625 §6.4.3.1, subcommand 0).
     Result<void> tare_now(const TareOptions& options);
 
     /// Persist the current tare to FRS (Tare, subcommand 1).
     Result<void> persist_tare();
 
-    /// Save the dynamic calibration data to RAM now (Save DCD, 1000-3625
-    /// §6.4.5).
+    /// Save dynamic calibration data to FRS (1000-3625 §6.4.5; 1000-3927 §3.4).
     Result<void> save_dcd();
 
-    /// Configure the motion-engine dynamic calibration enables (ME Calibration,
-    /// configure subcommand; 1000-3625 §6.4.6.1).
-    ///
+    /// Configure dynamic calibration (1000-3625 §6.4.6.1).
     /// \param options which calibration routines the hub should run.
     Result<void> configure_dynamic_calibration(
         const CalibrationOptions& options);
 
-    /// Enable or disable periodic DCD save (1000-3625 §6.4.7.1). This command
-    /// has no response.
-    ///
-    /// \param enable whether the hub should save DCD periodically.
-    /// P0 is 0x00 to enable and 0x01 to disable (1000-3625 §6.4.7.1).
+    /// Enable or disable periodic DCD save without a response (1000-3625
+    /// §6.4.7.1).
+    /// \param enable whether the hub should save DCD periodically. P0 is 0 to
+    /// enable, 1 to disable.
     Result<void> set_periodic_dcd(bool enable);
 
-    /// Clear the on-chip DCD and reset the hub (1000-3625 §6.4.9.1). The reset
-    /// restarts the startup handshake; the driver re-applies desired sensors on
-    /// recovery.
-    ///
-    /// This discards the dynamic calibration the hub has accumulated. To
-    /// restart the hub, use reset(); calibration survival is UNCONFIRMED
-    /// (FW-2).
+    /// Discard dynamic calibration and reset. Desired sensors are reapplied
+    /// after the handshake (1000-3625 §6.4.9.1).
+    /// Use reset() to restart without clearing DCD. Calibration survival is
+    /// UNCONFIRMED (FW-2).
     Result<void> clear_dcd_and_reset();
 
-    /// Restart the hub using the executable-channel reset (1000-3600 §2.2). The
-    /// handshake runs again and desired sensors are re-applied on recovery.
+    /// Restart through the executable channel and reapply desired sensors
+    /// after the handshake (1000-3600 §2.2).
     Result<void> reset() { return from_sh2(session_.request_reset()); }
 
-    /// Ask which oscillator the hub's clock system uses (1000-3625 §6.4.8). The
-    /// type arrives at the command sink in R0.
+    /// Request the oscillator type, delivered to the command sink in R0
+    /// (1000-3625 §6.4.8).
     Result<void> request_oscillator_type();
 
-    /// Ask the hub to report queued errors (1000-3625 §6.4.1). Each error
-    /// arrives at the command sink as its own response; a response whose error
-    /// source is 255 ends the sequence.
-    ///
-    /// \param severity report errors of this severity and higher; 0 is the
-    ///        highest.
+    /// Request queued errors, each delivered as a command response (1000-3625
+    /// §6.4.1). Error source 255 ends the sequence.
+    /// \param severity report errors at this severity or higher; 0 is highest.
     Result<void> report_errors(std::uint8_t severity = 0);
 
-    /// Escape hatch for commands without a typed forwarder (1000-3625 §6.4).
-    ///
+    /// Send a command without a typed wrapper (1000-3625 §6.4).
     /// \param command the command number; must be in 1-127.
-    /// \param params the command parameters.
+    /// \param params command parameter bytes.
     Result<void> send_command(std::uint8_t command,
                               std::span<const std::uint8_t> params = {});
 
     /// \}
 
-    // --- diagnostics ---------------------------------------------------------
-
     /// The policy counters this driver owns (OR-1).
     [[nodiscard]] Stats stats() const;
 
-    /// The session's protocol and framing counters, which pico-sh2's
-    /// observability requirement specifies and this driver passes through.
-    /// Cited by description rather than by ID: OR is this repository's own
-    /// prefix, so the ID would resolve to the wrong document (EN-02.8).
+    /// The session's protocol and framing counters, specified by pico-sh2's
+    /// observability requirement. It is cited by name because OR is also this
+    /// repository's prefix.
     [[nodiscard]] const pico_sh2::SessionCounters& counters() const {
         return session_.counters();
     }
@@ -523,49 +401,34 @@ class Bno085 {
     [[nodiscard]] const pico_sh2::Session& session() const { return session_; }
 
    private:
-    // Locate a desired entry by sensor; nullptr if absent.
     pico_sh2::FeatureConfig* find_desired(pico_sh2::reports::SensorId sensor);
 
-    // Record `config` in the desired table (insert or update). Returns the
-    // slot, or nullptr if a new entry would exceed the cap (BR-1).
+    // Insert or update a configuration. Return nullptr for a new sensor
+    // beyond the cap (BR-1).
     pico_sh2::FeatureConfig* store_desired(
         const pico_sh2::FeatureConfig& config);
 
-    // Drop a desired entry by sensor; no-op if absent.
     void erase_desired(pico_sh2::reports::SensorId sensor);
 
-    // Enqueue the desired sensors still marked pending to the session, in
-    // table order. Enqueues stop at the first full TX queue (BR-2); the
-    // next service() flushes the queue and resumes, so re-applying more sensors
-    // than the queue depth spreads across service() calls.
+    // Enqueue pending sensors in table order until the TX queue fills.
+    // The next service() flushes the queue and resumes (BR-2).
     void pump_reapply();
 
-    // Mark every desired sensor pending, so subsequent service() calls
-    // (re)apply each one. Set Feature is idempotent, so re-sending an already-
-    // applied sensor is harmless. Used when an immediate send is refused by a
-    // full TX queue so the recorded desire still reaches the hub.
+    // Mark all entries pending for subsequent service() calls.
     void schedule_reapply();
 
-    // Session callbacks (installed in the constructor).
     void on_hub_reset();
     void on_diag(pico_sh2::DiagEvent event);
 
     pico_sh2::Session session_;
 
-    /// One desired sensor: the configuration, and whether it still has to be
-    /// sent in the current re-apply pass.
-    ///
-    /// The flag is per entry, not an index into the table: an index is only
-    /// correct while the table does not change mid-pass, and enable_sensor()
-    /// and disable_sensor() can be called between service() calls. The flag
-    /// asks the question of the entry rather than of its position.
+    /// A desired configuration and its pending-send flag.
     struct Desired {
         pico_sh2::FeatureConfig config{};
         bool pending = false;
     };
 
-    /// The desired-sensor table. Named so pump_reapply() can spell its Entry
-    /// and Visit types without repeating the instantiation.
+    /// The desired-sensor table type.
     using DesiredMap = pico_util::FlatMap<pico_sh2::reports::SensorId, Desired,
                                           MAX_ENABLED_SENSORS>;
 
@@ -574,13 +437,11 @@ class Bno085 {
     bool was_ready_ = false;      // last observed session READY state
     bool pending_reset_ = false;  // a hub reset occurred; recovery is in flight
 
-    // Re-apply state machine: on the rising edge to READY every desired sensor
-    // is (re)sent, resumed across service() calls when the TX queue backs up.
+    // A reapplication pass can span several service() calls.
     bool reapply_active_ = false;
     bool reapply_after_reset_ = false;  // this re-apply follows a hub reset
 
-    // Diagnostic events seen, and whether each kind has already been logged —
-    // a storm must not put printf in the service loop once per event.
+    // A diagnostic storm must not put printf in service() once per event.
     std::uint32_t diag_events_ = 0;
     std::uint32_t diag_logged_kinds_ = 0;
 

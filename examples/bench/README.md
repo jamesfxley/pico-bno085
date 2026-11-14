@@ -1,10 +1,10 @@
 # bench
 
-The on-device validation harness. Brings the hub up over either bus and answers
-a line protocol that `bench.py` drives to run the checklist.
+The device benchmark starts the hub over either bus. `bench.py` drives its
+serial line protocol and applies the checklist thresholds.
 
-The firmware only measures and reports; every threshold lives in `bench.py`, so
-the device stays a dumb instrument and changing a gate needs no reflash.
+The firmware measures and reports. Thresholds are in `bench.py`, so changing
+a threshold needs no reflash.
 
 ```sh
 python3 dev.py build --tree firmware          # from the repository root
@@ -14,10 +14,10 @@ python3 examples/bench/bench.py --port "$RUN/bno-tty" --bus spi
 Follow [the pinned family device guide](../../infra/guides/device.md) for
 flashing and console access. The bench image is
 `build-firmware/examples/bench/pico_bno085_bench.uf2`. Close other clients of
-the serial port before flashing or benchmarking. These are device actions,
-not smoke checks; a device action needs specific authorization.
+the serial port before flashing or benchmarking. Device actions follow the
+authorisation policy in the device guide.
 
-For the proxy route, set `BOARD_SERIAL` to the authorized serial and `RUN` to
+For the proxy route, set `BOARD_SERIAL` to the authorised serial and `RUN` to
 a disposable folder in both terminals. In one terminal, from the repository:
 
 ```sh
@@ -37,7 +37,7 @@ the bus acknowledged by the firmware (both replies for b-parity).
 
 ## Line protocol
 
-One command per line. Replies begin `#`; telemetry lines begin `E,`.
+Commands occupy one line. Replies begin `#` and telemetry begins `E,`.
 
 | Command | Does |
 |---|---|
@@ -47,7 +47,7 @@ One command per line. Replies begin `#`; telemetry lines begin `E,`.
 | `flush <id_hex>` | Make a batching sensor deliver now |
 | `run <ms>` | Stream events, then a `# stats` summary and `# done` |
 | `stat` | A `# stats` line now |
-| `heap` | Post-init heap growth (AR-1) |
+| `heap` | Post-init heap growth |
 | `reset` | Restart the hub, using the executable-channel reset |
 | `cleardcd` | Clear the calibration and reset |
 | `trace 0\|1` | Dump the raw bytes of every transfer |
@@ -64,22 +64,22 @@ so a counter added in pico-sh2 appears here without an edit.
 |---|---|
 | `b-boot` | Reset to READY |
 | `b-rate` | A sensor at a requested rate; delivered rate and drops |
-| `b-rv400` | Rotation vector at 400 Hz (PR-1) |
-| `b-ts` | Timestamp ordering within the reconstruction bound (PR-3) |
-| `b-rvphase` | Rotation vector and gyroscope at one rate over a separable interval; their phase is recorded, not gated (PR-3) |
-| `b-i2c100` | Accel + gyro + mag concurrently at 100 Hz (PR-2) |
-| `b-girv` | Gyro-integrated rotation vector at its gate rate (PR-4) |
-| `b-lat` | Worst HINTN-to-read service gap (HR-5) |
-| `b-heap` | Post-init heap growth is zero (AR-1) |
-| `b-parity` | Both buses deliver the same stream (HR-4) |
+| `b-rv400` | Rotation vector at 400 Hz |
+| `b-ts` | Timestamp ordering within the reconstruction bound |
+| `b-rvphase` | Rotation vector and gyroscope at one rate over a separable interval; their phase is recorded, not gated |
+| `b-i2c100` | Accel + gyro + mag concurrently at 100 Hz |
+| `b-girv` | Gyro-integrated rotation vector at its gate rate |
+| `b-lat` | Worst HINTN-to-read service gap |
+| `b-heap` | Post-init heap growth is zero |
+| `b-parity` | Both buses deliver the same stream |
 | `b-reset` | Recovery and desired-sensor re-enable |
-| `b-soak` | A long run with the error counters at zero (OR-1) |
+| `b-soak` | A long run with the error counters at zero |
 
-`b-soak` takes an hour and is excluded from a default run; name it explicitly.
-Promoted results and the measured figures are in
+`b-soak` takes an hour and is excluded from default runs. It is selected by
+name. Promoted results and the measured figures are in
 [baselines/README.md](baselines/README.md).
 
-## When the board is not talking
+## Troubleshooting
 
 `trace 1` shows the wire and `boot` retries the handshake. If the question is
 whether the pads and jumpers work at all, check the power, straps and wiring
@@ -92,7 +92,7 @@ write is acknowledged, and requires zero sequence gaps and reassembly drops.
 ## Wire timing diagnostic
 
 `trace 1` prints the capped transfer format above. `trace 2` prints each
-successful read as one line, including all header and cargo bytes:
+successful read on one line, including the header and cargo:
 
 ```text
 # wire edge_us=123456 n=9: 09 00 03 00 fb 0a 00 00 00
@@ -102,10 +102,10 @@ successful read as one line, including all header and cargo bytes:
 byte count. Errors are `# wire edge_us=0 err=<code>`. Writes retain the
 `trace 1` format. `trace 0` disables either mode. The firmware walks fixed
 storage and prints directly; full tracing costs serial bandwidth and service
-time, so it is diagnostic evidence rather than an unperturbed timing run.
+time, so it perturbs the timing being measured.
 
 ```text
-./bench.py --port /tmp/bno-tty --bus spi --tests b-rvphase --wire --output-dir /tmp/bno-wire
+python3 examples/bench/bench.py --port /tmp/bno-tty --bus spi --tests b-rvphase --wire --output-dir /tmp/bno-wire
 ```
 
 Each invocation selects the bus and resets the hub. Isolation disables all
@@ -116,10 +116,13 @@ RV/gyro times, and pairs wire and driver events by sensor ID and sequence in
 arrival order. The result detail names a `b-rvphase-wire-<UTC>.json` sidecar
 under `--output-dir`, without requiring `--promote`. It contains full frames,
 per-event agreement, wire-only nearest phase offsets and granted intervals.
-Missing grants, unmatched events, decode errors and unsupported fragmented or
-unknown cargoes are explicit; they do not establish agreement. Wire decoding
-uses SH-2 1000-3625 §§6.5.5, 7.2 and BNO08X 1000-3927 §1.3.5.3's worked
-example (the delay-sign discrepancy is noted in PR-3).
+The sidecar identifies missing grants, unmatched events, decode errors and
+unsupported fragmented or unknown cargoes. Those cases establish no agreement.
+Wire decoding uses SH-2 1000-3625 §§6.5.5, 7.2 and BNO08X 1000-3927
+§1.3.5.3's worked example (the [timestamp requirement][ts] records the
+delay-sign discrepancy).
 
-The diagnostic changes no PASS/FAIL rule. It runs only for `b-rvphase`; the
-full release suite runs without full tracing.
+[ts]: ../../docs/technical-specification.md#4-performance-requirements-pr
+
+The diagnostic leaves PASS/FAIL rules unchanged. It runs only for `b-rvphase`;
+the full release suite runs without full tracing.

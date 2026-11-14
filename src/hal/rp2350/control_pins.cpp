@@ -11,7 +11,6 @@ namespace pico_bno085::hal {
 
 namespace {
 
-// Drive a pin as a push-pull output at the given level in one step.
 void drive_output(std::uint32_t pin, bool high) {
     gpio_init(pin);
     gpio_set_dir(pin, GPIO_OUT != 0U);
@@ -21,8 +20,7 @@ void drive_output(std::uint32_t pin, bool high) {
 }  // namespace
 
 void ControlPins::init() {
-    // The hub is held in reset first so the straps settle before it samples
-    // them; strap_plan() holds the order, which is tested on the host (HR-3).
+    // NRST is asserted before the straps change (HR-3).
     const detail::StrapPlan plan =
         detail::strap_plan(detail::StrapPins{.nrst = config_.nrst_pin,
                                              .ps0 = config_.ps0_pin,

@@ -2,34 +2,21 @@
 #pragma once
 
 /// \file pin_mux.hpp
-/// Which GPIOs the RP2350 function mux lets an I2C or SPI peripheral reach, as
-/// predicates over plain integers, so the rules are tested on the host. The
-/// transports' init() refuses a pin these reject, and pins.hpp binds its
-/// defaults to them at compile time.
-///
-/// The rules are those of the RP2350 datasheet, Table 677 (GPIO Bank 0
-/// Functions), columns F1 (SPI) and F3 (I2C):
-///  - I2C instance = (gpio / 2) % 2; SDA on even GPIOs, SCL on odd ones.
-///  - SPI instance = (gpio / 8) % 2; by gpio % 4, RX (MISO) 0, CSn 1, SCK 2,
-///    TX (MOSI) 3.
-///
-/// Every predicate also bounds the GPIO by the bank's size, because GPIOs 30
-/// to 47 exist on the 80-pin package only.
+/// RP2350 pin-mux predicates (datasheet Table 677, F1 and F3).
+/// GPIOs 30 to 47 exist only on the 80-pin package.
 
 #include <cstdint>
 
 namespace pico_bno085::hal::detail {
 
-/// The number of GPIOs in bank 0 and the number of instances of a bus, which
-/// bound every pin check.
+/// GPIO bank and peripheral instance limits.
 struct MuxBounds {
     std::uint32_t gpio_count = 0;     ///< GPIOs in bank 0 (30 or 48).
     std::uint32_t i2c_instances = 2;  ///< I2C peripherals.
     std::uint32_t spi_instances = 2;  ///< SPI peripherals.
 };
 
-/// The bounds of the smaller package, whose 30 GPIOs every RP2350 has; the
-/// compile-time checks of the default pins use them.
+/// Bounds for the 30-GPIO package, used to check default pins.
 inline constexpr MuxBounds BOUNDS_30_GPIOS{.gpio_count = 30};
 
 /// Whether `gpio` is a GPIO of bank 0.

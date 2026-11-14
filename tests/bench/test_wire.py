@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: MIT
-"""OR-1 / PR-3: wire evidence diagnoses timing without changing verdicts."""
+"""Wire evidence diagnoses timing without changing verdicts (OR-1, PR-3)."""
 
 import importlib.util
 from pathlib import Path
@@ -15,8 +15,9 @@ SPEC.loader.exec_module(bench)
 
 
 def test_base_rebase_and_two_sensor_delays():
-    # 1000-3625 §§7.2.1-7.2.2, §§6.5.13/18: base 10, rebase -3;
-    # gyro delay 2, RV delay 0x102. 1000-3927 §1.3.5.3 adds delay.
+    # The fixture has base 10, rebase -3, gyro delay 2 and RV delay 0x102
+    # (1000-3625 §§7.2.1-7.2.2, §§6.5.13, 6.5.18).
+    # Delay addition follows 1000-3927 §1.3.5.3.
     frame = bytes.fromhex(
         "26 00 03 00 fb 0a 00 00 00 "
         "02 07 03 02 00 00 00 00 00 00 "

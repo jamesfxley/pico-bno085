@@ -1,16 +1,21 @@
 # pico-bno085 Architecture
 
-How the driver is put together. The normative requirements live in
-[technical-specification.md](technical-specification.md); the wiring and
-bring-up procedure in [usage-guide.md](usage-guide.md).
+The [specification](technical-specification.md) defines guarantees. The
+[usage guide](usage-guide.md) covers wiring and startup.
 
-## What is here and what is not
+## Scope
 
-The protocol — SHTP framing, the SH-2 session, report decoding — is
-[pico-sh2](https://github.com/jamesfxley/pico-sh2)'s, and it is
-platform-independent. This repository is what makes that run on an RP2350
-board: the pins, the reset and strap sequencing, the interrupt, the two buses,
-and the policy the protocol layer deliberately leaves to a consumer.
+[pico-sh2](https://github.com/jamesfxley/pico-sh2) implements SHTP framing,
+the SH-2 session and report decoding. This library adds RP2350 transports,
+reset and strap sequencing, interrupts and device policy.
+
+`pico_bno085::core` is the aggregate target. `pico_bno085::driver` exposes the
+portable façade. The HAL and testing targets are described below. Internal
+strict targets in the export set are implementation details.
+
+The seeded channel map permits a reset before the first advertisement,
+including recovery from a session stuck before READY. An advertisement
+replaces the seed if the hub announces another base.
 
 ```
         application
@@ -39,141 +44,141 @@ and the policy the protocol layer deliberately leaves to a consumer.
         (installed; see below)
 ```
 
-## The HAL, split by what needs hardware
+## HAL modules
 
-The HAL is two modules, and the division is not cosmetic. Protocol reasoning
-tangled up with SDK calls is testable only by flashing a board, so the half that
-needs no hardware is separated out and host-tested. `CXX-13.1` puts one target
-in one directory, so the split is visible in the tree rather than only in a
-`CMakeLists.txt`.
+The HAL separates portable logic from SDK calls so protocol handling can be
+tested without flashing a board. Each module has its own directory and target
+(CXX-13.1).
 
-**`pico_bno085::hal_core`** (`src/hal/`) is header-only, links no SDK, and
-builds on host:
+`pico_bno085::hal_core` is header-only and builds on host and firmware:
 
-- **`SplitReadCompensator`** undoes what the host's own read pattern does to a
-  cargo. Retrieving one over I2C takes a header peek and then a read of the
-  whole cargo, and the hub answers that split with a continuation flag and an
-  extra sequence number that describe the *reads*, not the cargo. Getting this
-  wrong makes every cargo look like a dropped one.
-- **`EdgeLatch`** publishes the HINTN edge and its timestamp from the interrupt
-  to `service()` through a seqlock, because a 64-bit store is two instructions
-  on the M33 and a reader can land between them. The protocol is
-  `pico_util::Published`'s `SEQLOCK_WRITER_NOT_PREEMPTIBLE` strategy, named
-  rather than defaulted: the writer is the handler and the reader is mainline,
-  so a reader that spins always terminates. What stays here is the latch policy
-  — the consumable flag, the level-fallback count, and the edge each read is
-  anchored to (AR-2).
-- **`detail::strap_plan`** is the order the strap and reset lines are driven
-  in (HR-3), as data: NRST asserted first, then PS1, PS0 and BOOTN, and SA0
-  only for I2C. `ControlPins::init()` drives those steps and nothing else, so
-  the order is tested on the host rather than only on a wired board.
-- **`detail::pin_mux`** is the RP2350 function-mux rules (datasheet Table 677)
-  as predicates: which GPIO can carry I2C SDA or SCL, or SPI RX, SCK or TX, for
-  a given instance and bank size. Each transport's `init()` refuses a pin they
-  reject, before any pin is touched, and `pins.hpp` binds its default pins to
-  them by `static_assert`.
+- `SplitReadCompensator` removes the continuation flag and extra sequence
+  advance caused by an I2C header peek. A genuine unfinished cargo retains its
+  continuation flag. Without compensation, the framing engine would see false
+  fragments and sequence gaps (HR-6).
+- `EdgeLatch` passes HINTN timestamps from interrupt to `service()` context.
+  A 64-bit timestamp spans two 32-bit stores on the M33, so
+  `pico_util::Published` uses `SEQLOCK_WRITER_NOT_PREEMPTIBLE`. The interrupt
+  writer completes before the mainline reader resumes, so the reader's wait
+  terminates. The consumable flag and fallback count belong to the latch (AR-2).
+- `detail::strap_plan` orders NRST, PS1, PS0, BOOTN and I2C-only SA0 writes.
+  `ControlPins::init()` executes the host-tested plan (HR-3).
+- `detail::pin_mux` checks the GPIO bank and peripheral mapping against the
+  RP2350 datasheet, Table 677. Transport `init()` checks custom pins before
+  touching them. `pins.hpp` checks default pins at compile time.
 
-**`pico_bno085::hal`** (`src/hal/rp2350/`) is firmware-only and holds what
-genuinely needs the SDK: the I2C and SPI peripherals, GPIO, and the timer. It
-nests inside `src/hal/` and exports the same `pico_bno085/hal/` include
-spelling, so the directory layout is invisible to a consumer (`CXX-13.3`).
+`pico_bno085::hal` contains firmware-only I2C, SPI, GPIO and timer adapters
+under `src/hal/rp2350/`. Public headers retain the `pico_bno085/hal/` prefix
+(CXX-13.3).
 
-`TransportCore` sits between them, holding what both buses need regardless of
-how bytes move — the strap and reset lines, the HINTN latch, the pin
-configuration, the monotonic clock, and the counters. Both transports answer
-`counters()` with the same type, so a consumer reading them needs no knowledge
-of which bus it is on.
+`TransportCore` shares control pins, the HINTN latch, clock and counters between
+buses. `TransportCounters` has the same meaning for either transport.
+`HintnLatch` uses raw GPIO handlers so an application's default GPIO callback
+remains available. The dispatch table retains its registered mask because SDK
+removal requires that mask and duplicate pin registration asserts.
 
 ## The testing target
 
-**`pico_bno085::testing`** is header-only, built for host and firmware, and
-exported with the package:
-
-- **`TracingTransport`** decorates any transport and reports the raw bytes of
-  every transfer to a sink. The session talks to the hub through one seam, so
-  that seam is the only place the whole conversation is visible. Its callers are
-  this repository's tests, the bench example, and any downstream project testing
-  against the same seam — which is why it ships rather than staying in-tree.
+`pico_bno085::testing` exports the header-only `TracingTransport` decorator for
+host and firmware. Tests, the benchmark and downstream consumers use it to
+observe transfers through `IHalTransport`. Its caller supplies the output sink.
+Printing in the sink adds service time before the next transfer.
 
 ## The two transports
 
-They differ in how they move bytes and in what they can report:
-
-|  | I2C | SPI |
+| Operation | I2C | SPI |
 |---|---|---|
-| Retrieval | Header peek, then the cargo (needs the split-read compensation) | Header and body inside one CSN assertion |
-| Hub absent | The address is not acknowledged | The header reads back as the reserved dead-bus pattern |
-| Host-initiated write | Just write | WAKE, wait for HINTN, then CSN, then drop the wake assertion (HR-1) |
-| Idle poll | A BNO086 answers a read with nothing to send with a null header; the continuation's second HINTN assertion is discarded, so it opens no service-latency span and backs no later read as edged (HR-5, HR-6) | Nothing extra |
+| Read | Peek at the header, then read the cargo with compensation | Read header and body within one CSN assertion |
+| Absent hub | Address not acknowledged | Reserved dead-bus header |
+| Write | Write directly | Assert WAKE, wait for HINTN, assert CSN, release WAKE (HR-1) |
+| Empty read | Pass through a null header | Pass through a null header |
 
-Both report an absent read the same way, and neither reports it as an error: a
-read is only issued behind a HINTN assertion, so a hub that does not answer has
-left the bus since asserting — it is resetting, not broken, and the session's
-reset recovery handles it.
+Both transports report read absence successfully so the session can recover
+from a reset. A read error would fault startup or restart the READY handshake.
+BNO086 empty-poll behaviour remains unvalidated (FW-2).
+
+Retrieval reads the 4-byte header for the length, then rereads the header and
+cargo (1000-3927 §1.3.1); the specification gives the reason (HR-6). HINTN
+asserts per transfer, including each part of a split read (1000-3535 §2.6).
+After the second transfer, the latch discards the answered assertion so it
+cannot back a later cargo's read or latency period (HR-5, HR-6).
+A coalesced assertion for another cargo still reaches the live-level fallback
+(HR-1). SPI writes use the same discard when no duplex cargo was retained.
+
+Service latency starts at the first unserviced edge, since a retry would
+otherwise hide a delayed read. Fallback reads have no fresh edge to measure.
+The benchmark clears the peak before each run because reset and boot waits
+can create startup outliers (HR-5).
 
 ## Policy the façade owns
 
-`Session` holds no record of what was asked for, on purpose: it implements the
-protocol, and what to do after a hub reset is a decision, not a protocol rule.
-`Bno085` makes that decision.
+`Session` implements the protocol without retaining consumer intent. `Bno085`
+keeps a desired-sensor table and reapplies it after startup or reset. The table
+can exceed the transmit queue's depth, so per-entry pending flags let a pass
+resume over several `service()` calls. Flags remain attached to entries when
+sensors are enabled or disabled between calls.
 
-It keeps a **desired-sensor table**, and re-applies every entry when the
-session reaches READY — after startup and after any hub reset. The table can
-hold more sensors than the transmit queue has slots, so a pass can span several
-`service()` calls. Each entry carries a pending flag, set when a pass is
-scheduled and cleared when the entry is sent, and the next call resumes with
-the entries still pending. The flag belongs to the entry rather than to a
-position in the table, so an `enable_sensor()` or `disable_sensor()` between
-calls cannot drop an unsent entry from the pass. The re-apply is keyed on a
-reset being outstanding rather than only on the edge into READY: a reset whose
-whole re-handshake drains inside one `service()` shows no edge, and keying on
-the edge alone would leave the hub streaming nothing while the table said
-otherwise.
+An outstanding reset triggers reapplication even if the entire handshake
+completes within one `service()` call and no not-ready state is observed.
+`enable_sensor()` reports `APPLIED` or `DEFERRED`, allowing a caller to tell
+whether its recorded configuration has been sent. A full queue schedules
+reapplication. Reissuing Set Feature is idempotent.
 
-`enable_sensor` distinguishes **applied from deferred**, because "recorded, and
-the hub will hear about it on a later pass" is an ordinary outcome — the
-session is not READY yet, or the queue is momentarily full — and a caller
-waiting to see events needs to tell it from "sent".
+Typed tare axes and basis prevent exchanging the two arguments. Named
+calibration fields prevent exchanging positional flags. `TareAxes` exposes
+only the two supported bitmaps (1000-3625 §6.4.3.1).
 
-## Boundaries the façade keeps
+## Façade boundaries
 
-`Stats` holds only the counters the driver owns. The session's are read through
-`counters()` and the transport's through the transport, rather than being
-copied into a struct here — copying them would make pico-sh2's counter list
-part of this driver's API, so adding a counter there would break consumers
-here.
+`Stats` contains driver counters. Session counters remain accessible through
+`counters()` and transport counters through the supplied transport. Copying
+those sets into `Stats` would make dependency counter additions break this API.
+Reset notifications identify no cause, so `hub_resets` counts requested and
+spontaneous resets. Correlating requests with notifications could hide a
+spontaneous reset between the request and its transmission.
 
-The façade is non-copyable and non-movable, as are `HintnLatch` and
-`TransportCore`: the session's sinks are bound to the façade and the interrupt
-dispatch table points at the latch, so a copy would leave either pointing at
-the original.
+The façade, `HintnLatch` and `TransportCore` cannot be copied or moved. Session
+sinks retain the façade's address, and interrupt dispatch retains the latch's.
 
 ## Allocation
 
-Nothing allocates after `begin()`. The desired table is sized from the profile,
-which is forwarded to pico-sh2 so the driver can never desire more sensors than
-the session can hold. `pico_util::HeapWatermark` measures growth from a baseline
-the bench arms once the session is constructed, which is what `b-heap` gates on.
+No driver allocation occurs after `begin()`. The desired table and the session
+use the same profile capacity, so the driver cannot desire more sensors than
+the session holds. `pico_util::HeapWatermark` measures growth from a baseline
+armed after session construction. The `b-heap` case checks that growth.
+Example drivers use static storage to keep fixed session buffers off the
+4 KiB core-0 stack and include them in static footprint measurements.
 
-## Wiring other than the reference board
+## Startup timing and build checks
 
-`pins.hpp` describes one board. A consumer on different wiring sets the
-control lines (HINTN, NRST, PS0, PS1, BOOTN, SA0) in `ControlConfig`, and the
-bus pins and peripheral instance in its transport's own `Config`.
+Version assertions run in the driver translation unit because the umbrella
+header has no compiled target. Private CMake definitions bind those assertions
+to the build version. The assertions also run in firmware builds and in
+consumer builds that compile the library from source, where the host version
+test does not run.
 
-The `static_assert`s in `pins.hpp` bind its own I2C and SPI defaults to the
-instance their pad numbers can reach — the RP2350's mux fixes each instance to
-pin numbers of a particular residue. A transport's `Config` pins are checked at
-run time by `init()` against the same rules (`detail::pin_mux`), which refuses
-a pin the selected peripheral cannot reach or a GPIO outside bank 0 with
-`INVALID_ARGUMENT`.
+The 30 ms I2C transaction timeout covers a full large-profile transfer at the
+minimum baud rate with clock-stretch margin. It bounds a bus fault or wedged
+clock stretch; it is not the HINTN service-latency budget.
 
-## Selecting a bus, and why it is not hot-switching
+The 2 ms reset hold allows a host that cannot time a shorter pulse precisely.
+The boot delay and phase deadlines are timeout guards: the datasheet gives
+`t1` as at least 90 ms without a maximum (1000-3927 §6.5.3). SPI's WAKE timeout
+also has margin above the typical 150 microseconds, for which no maximum is
+given (1000-3927 Figure 6-12).
 
-The bench selects a bus at run time, and switching tears the current transport
-down — releasing its pads — and re-straps with the hub held in reset. That
-works because the straps are only read at the reset edge.
+## Custom wiring
 
-What it is not is hot-switching: the hub restarts, so anything it had learned
-in the session is gone. Adequate for a harness comparing the two buses; not
-something an application should do.
+Consumers set control lines in `ControlConfig` and bus pins and the peripheral
+instance in the transport's `Config`. The
+[usage guide](usage-guide.md#pins-the-bno085-multiplexes) describes the pin-mux
+rules.
+`init()` returns `INVALID_ARGUMENT` for unreachable or out-of-bank bus pins.
+
+## Bus selection
+
+The benchmark releases the outgoing transport's interrupt and pads before
+initialising the other transport. Initialisation drives straps with NRST
+asserted, then the session releases reset. The hub samples the straps at reset.
+Switching therefore restarts the hub and loses its session state. This suits
+a benchmark comparing buses. An application should keep one bus selected.

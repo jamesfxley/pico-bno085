@@ -1,6 +1,5 @@
 // SPDX-License-Identifier: MIT
-// OR-1: the wire is visible at the seam the session talks through, without a
-// transport edit and a reflash.
+// Observe transfers through the session's transport interface (OR-1).
 #include "pico_bno085/testing/tracing_transport.hpp"
 
 #include <gtest/gtest.h>
@@ -22,12 +21,8 @@ using pico_bno085::testing::TraceRecord;
 using pico_bno085::testing::TraceSink;
 using pico_bno085::testing::TracingTransport;
 
-// A transport that answers from a script, so the decorator is what is under
-// test rather than a bus.
-// final: the base declares its destructor protected and non-virtual on purpose
-// (a transport is owned by whoever supplies it, never deleted through this
-// pointer). A derived class with virtual functions and a public non-virtual
-// destructor reopens exactly that hazard unless it cannot be derived from.
+// Scripted transport for decorator tests. final prevents further derivation
+// from exposing the base's protected non-virtual destructor.
 class FakeTransport final : public pico_sh2::IHalTransport {
    public:
     std::vector<std::uint8_t> next_read;
@@ -47,12 +42,8 @@ class FakeTransport final : public pico_sh2::IHalTransport {
         if (read_error != pico_sh2::Sh2Error::NONE) {
             return read_error;
         }
-        // A real transport reads into the staging span and reports what fit,
-        // so its length is <= dst.size() by construction. The fake is the only
-        // thing that can violate that, and the decorator takes the length
-        // straight to dst.first(n) — where a length past the end is undefined
-        // rather than a test failure. Clamping keeps the fake to the contract
-        // it stands in for (EN-04.1).
+        // Clamp the fake's length to the staging span so dst.first(n) stays
+        // valid.
         const std::size_t served = std::min(next_read.size(), dst.size());
         std::ranges::copy(std::span(next_read).first(served), dst.begin());
         return pico_sh2::ReceivedTransfer{.length = served, .intn_edge_us = 42};
@@ -119,7 +110,7 @@ TEST(TracingTransport, ReportsNothingUntilTracingIsOn) {
     EXPECT_EQ(cap.directions.size(), 1U);
 }
 
-// OR-1: a wire trace preserves the anchor needed to reconstruct event times.
+// a wire trace preserves the anchor needed to reconstruct event times (OR-1).
 TEST(TracingTransport, CopiesTheReadEdgeAndZerosWritesAndErrors) {
     FakeTransport fake;
     fake.next_read = {0x04, 0x00, 0x02, 0x07};
@@ -154,7 +145,6 @@ TEST(TracingTransport, ReportsTheBytesAReadActuallyMoved) {
 
     ASSERT_EQ(cap.payloads.size(), 1U);
     EXPECT_EQ(cap.directions[0], TraceDirection::READ);
-    // The span is the transfer, not the whole staging buffer.
     EXPECT_EQ(cap.payloads[0], fake.next_read);
     EXPECT_EQ(cap.errors[0], pico_sh2::Sh2Error::NONE);
 }
@@ -173,7 +163,6 @@ TEST(TracingTransport, ReportsAFailedReadAsAnErrorWithNoBytes) {
 
     ASSERT_EQ(cap.errors.size(), 1U);
     EXPECT_EQ(cap.errors[0], pico_sh2::Sh2Error::TIMEOUT);
-    // Nothing was moved, so there is nothing to show.
     EXPECT_TRUE(cap.payloads[0].empty());
 }
 
@@ -194,8 +183,7 @@ TEST(TracingTransport, ReportsWritesAndTheirOutcome) {
     fake.write_error = pico_sh2::Sh2Error::BUS_ERROR;
     EXPECT_FALSE(tracer.write_transfer(frame).ok());
     EXPECT_EQ(cap.errors[1], pico_sh2::Sh2Error::BUS_ERROR);
-    // The frame still reaches the transport: tracing observes, it does not
-    // gate.
+    // Tracing leaves frame delivery unchanged.
     EXPECT_EQ(fake.last_write, frame);
 }
 

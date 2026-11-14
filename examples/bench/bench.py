@@ -1,52 +1,18 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: MIT
-"""Host-side validation suite for the pico-bno085 bench firmware.
+"""Drive the device checklist over the serial protocol in README.md.
 
-Drives the bench firmware's USB CDC line protocol (see examples/bench/main.cpp)
-over a serial port and runs the device checklist. The firmware only measures and
-reports; the pass/fail thresholds live here so the device stays a dumb
-instrument.
+The heap command reports growth after construction (AR-1).
+The heap case checks zero growth (AR-1).
+RV400 checks rotation-vector delivery (PR-1).
+Timestamp cases check ordering (PR-3) and record RV-to-gyro phase (PR-3).
+I2C100 checks concurrent sensors (PR-2). GIRV checks integrated RV (PR-4).
+Latency checks HINTN service (HR-5). Parity compares buses (HR-4).
+The soak checks counters over a long run (OR-1).
 
-Protocol, host -> device (one command per line):
-    bus i2c|spi                         select the bus and bring the hub up
-    cfg <report_id_hex> <interval_us>   enable/reconfigure a sensor
-    off <report_id_hex>                 disable a sensor
-    run <duration_ms>                   stream events, then a '# stats' summary
-    stat                                emit a '# stats' line now
-    reset                               restart the hub through its executable channel
-    cleardcd                            clear calibration and reset
-    flush <report_id_hex>               force a batching sensor to deliver
-    heap                                post-init heap growth (AR-1)
-    info                                constants needed to read the output
-Device -> host: telemetry lines 'E,<sensor>,<seq>,<event_us>,<accuracy>' and
-status lines beginning '#' ('# ready', '# ok', '# stats ...', '# done ...').
-
-Checklist (report IDs are SH-2 wire values):
-    b-boot    reset and time to the next '# ready'
-    b-rate    a single sensor at a requested rate; delivered rate and drops
-    b-rv400   rotation vector at 400 Hz, zero gaps and drops (PR-1)
-    b-ts      per-sensor timestamp monotonicity and jitter (PR-3)
-    b-rvphase rotation-vector-to-gyroscope phase, recorded (PR-3)
-    b-i2c100  accel + gyro + mag concurrently at 100 Hz (PR-2)
-    b-girv    gyro-integrated rotation vector at its gate rate (PR-4)
-    b-lat     worst HINTN-to-read service gap (HR-5)
-    b-heap    post-init heap growth is zero (AR-1)
-    b-parity  the same scenario on both buses, compared (HR-4)
-    b-reset   inject a reset; confirm recovery and desired-sensor re-enable
-    b-soak    a long run; drops and gaps stay at zero (OR-1)
-
-Results print as a table and, with --promote, are written to the baselines/
-directory beside this script.
-
-Usage:
-    ./bench.py --port /tmp/bno-tty --bus spi [--tests b-boot,b-rate]
-               [--sensor 05] [--rate-hz 50] [--duration 5]
-               [--wire] [--promote] [--output-dir baselines]
-
-Choose i2c or spi explicitly. Pass a serial path or the socat PTY described
-in examples/bench/README.md; no port is auto-detected.
-
-Requires pyserial (pip install pyserial); Python 3 otherwise standard library.
+Results print as a table. --promote writes them beside the script in baselines/.
+Pass --bus and a serial path as described in README.md. No port is discovered.
+Requires pyserial; the remaining imports use the Python standard library.
 """
 
 import argparse
@@ -72,11 +38,7 @@ ALL_TESTS = [
 # Tests that take a long time; excluded from a default run and asked for by name.
 SLOW_TESTS = {"b-soak"}
 
-# The hub's granted-rate band. 1000-3927 §6.9 states
-# 0.9 * RequestedRate <= ConfiguredRate <= 2.1 * RequestedRate, so a gate at
-# exactly the request would fail a hub behaving to specification and a gate
-# wider than this would pass one that is not. Stated once: every rate criterion
-# in the suite is this band, and a per-case number is how the two came apart.
+# Granted-rate factors (1000-3927 §6.9). All rate gates use this band.
 GRANTED_RATE_FLOOR = 0.9
 GRANTED_RATE_CEILING = 2.1
 
@@ -90,48 +52,37 @@ def within_granted_band(delivered_hz, requested_hz):
 # SH-2 report IDs of the rotation-vector-class sensors used by the default runs.
 ROTATION_VECTOR = 0x05
 READY_TIMEOUT_S = 3.0
-# Long enough that a driver polling at any useful rate issues many reads over
-# it, short enough not to lengthen the suite noticeably (HR-1, in b-boot).
+# Quiet observation interval in seconds for b-boot (HR-1).
 QUIET_INTERVAL_S = 2.0
 # Reset to READY plus the re-enable of every desired sensor.
 RECOVERY_TIMEOUT_S = 5.0
 
-# Resolution of the base-delta and report-delay fields (1000-3625 section
-# 7.2.1). A reconstructed time takes one of each, and each is quantised to a
-# tick, so it is off by less than two ticks; two times built separately differ
-# by less than four. PR-3 gates ordering at that bound. The firmware reports
-# the tick in its 'info' line; this is the fallback for a board too old to
-# answer.
+# Default tick in microseconds and ordering bound in ticks
+# (1000-3625 §7.2.1) (PR-3).
 DEFAULT_TICK_US = 100
 RECONSTRUCTION_TICKS = 4
-# b-rvphase pairs by nearest time, so an offset only shows modulo the sample
-# interval; the interval has to be this many bounds long for a time off the
-# sample grid to fall outside the bound.
+# Minimum sample interval in reconstruction bounds.
 PHASE_INTERVAL_BOUNDS = 10
-# The two streams count as one rate when their delivered rates agree this
-# closely.
+# Relative delivered-rate tolerance for treating two streams as one rate.
 PHASE_RATE_TOLERANCE = 0.01
 
 # The gyro-integrated rotation vector, which has its own SHTP channel.
 GYRO_INTEGRATED_RV = 0x2A
 
-# PR-2 enables these three concurrently.
+# Concurrent I2C test sensors (PR-2).
 ACCELEROMETER = 0x01
 GYROSCOPE = 0x02
 MAGNETOMETER = 0x03
 
-# Every sensor any test enables. The desired table survives a reset by design
-# (AR-3), so a test that wants one sensor has to disable the rest explicitly or
-# it measures a stream carrying whatever an earlier test left running.
+# Sensor IDs disabled for per-case isolation (AR-3).
 HARNESS_SENSORS = (0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x08, 0x09, 0x0F,
                    GYRO_INTEGRATED_RV)
 
 def decode_wire_input(edge_us, cargo):
     """Decode RV/gyro timing from a complete SH-2 input cargo."""
-    # 1000-3625 §§7.2.1-7.2.2: signed base/rebase, 100 us ticks.
-    # 1000-3927 §1.3.5.3's worked example adds report delay to the base;
-    # its earlier prose disagrees on the sign (see PR-3).
-    # Payload lengths: 1000-3625 §§6.5.13, 6.5.18; prefix §6.5.1.
+    # Signed base/rebase and 100 us ticks: 1000-3625 §§7.2.1-7.2.2.
+    # Delay addition follows 1000-3927 §1.3.5.3's example despite its prose
+    # disagreeing (PR-3). Lengths: 1000-3625 §§6.5.13, 6.5.18. Prefix: §6.5.1.
     lengths = {GYROSCOPE: 10, ROTATION_VECTOR: 14, 0xFB: 5, 0xFA: 5}
     events = []
     base = None
@@ -164,7 +115,7 @@ def decode_wire_input(edge_us, cargo):
 
 
 def decode_wire_transfer(edge_us, frame):
-    """Return timing events and grants; refuse incomplete transfers."""
+    """Return timing events and grants. Reject incomplete transfers."""
     # The bench traces SHTP header + cargo (1000-3927 §1.3.1).
     if len(frame) < 4:
         raise ValueError("short transfer header")
@@ -295,12 +246,10 @@ class Device:
         return None
 
     def collect_run(self, duration_ms, reconfigure=None):
-        """Send 'run', return (events, stats) gathered until '# done'.
+        """Send run and return (events, stats) through the done reply.
 
-        The grace period has to exceed the read timeout: a board that goes
-        quiet costs one full readline() before the deadline is even re-checked,
-        so a smaller margin would truncate the sample rather than wait out the
-        tail.
+        The grace period has to exceed the read timeout because readline() can
+        consume one timeout before the deadline is checked again.
         """
         self.send(f"run {duration_ms}")
         events = []
@@ -352,11 +301,7 @@ def parse_stats(line):
 
 
 def only(events, *sensors):
-    """Select the events of the sensors under test.
-
-    A stream carrying more than one sensor is then measured per sensor rather
-    than in aggregate.
-    """
+    """Select events by sensor so each stream is measured separately."""
     wanted = set(sensors)
     return [event for event in events if event["sensor"] in wanted]
 
@@ -392,12 +337,7 @@ def timestamp_jitter(events, interval_us):
 
 
 def timestamp_detail(events, interval_us):
-    """Characterise per-sensor inter-arrival deltas and any monotonicity failure.
-
-    Returns (monotonic, p99_ratio, inversions, worst_delta_us). A bare boolean
-    cannot distinguish a tick-quantisation tie from a reordering worth chasing,
-    so the size and count of the backward steps are reported.
-    """
+    """Return (monotonic, p99_ratio, inversions, worst_delta_us)."""
     by_sensor = {}
     for event in events:
         by_sensor.setdefault(event["sensor"], []).append(event["event_us"])
@@ -420,10 +360,7 @@ def timestamp_detail(events, interval_us):
 
 
 def read_info(dev):
-    """Read the constants the firmware reports.
-
-    The harness then never restates a value the device defines.
-    """
+    """Read constants reported by the firmware."""
     dev.send("info")
     line = dev.wait_for("# info", 2.0) or ""
     info = {}
@@ -437,7 +374,7 @@ def reconstruction_bound_us(dev):
     return RECONSTRUCTION_TICKS * read_info(dev).get("tick_us", DEFAULT_TICK_US)
 
 
-# PR-1 is stated over 60 s, so a shorter run is not evidence for it.
+# A run shorter than 60 s does not establish sustained delivery (PR-1).
 PR1_SECONDS = 60.0
 
 # The cases that select buses of their own.
@@ -445,11 +382,7 @@ OWN_BUS = {"b-rv400": "spi", "b-girv": "spi", "b-i2c100": "i2c", "b-parity": "bo
 
 
 def select_bus(dev, bus):
-    """Bring up one bus.
-
-    Switching is a re-strap with the hub held in reset, so it is legitimate
-    mid-session and b-parity relies on it.
-    """
+    """Select a bus by re-strapping with the hub held in reset."""
     dev.bus = None
     dev.send(f"bus {bus}")
     reply = dev.wait_for(f"# bus {bus}", 3.0)
@@ -460,11 +393,7 @@ def select_bus(dev, bus):
 
 
 def snapshot(dev):
-    """Read the '# stats' counters as they stand now.
-
-    The firmware's counters are cumulative over the session, so a per-run
-    figure is the difference across the run, never the raw value.
-    """
+    """Read cumulative counters. Per-run counts are differences between readings."""
     dev.send("stat")
     return parse_stats(dev.wait_for("# stats", 2.0) or "# stats")
 
@@ -474,12 +403,7 @@ def during(before, after, key):
 
 
 def ack(dev):
-    """Wait for a command acknowledgement.
-
-    Matching a bare '#' would also match '# ready', '# rx ...' and every other
-    status line, so a run could consume another line's output as its
-    acknowledgement and then race.
-    """
+    """Wait for a command acknowledgement without consuming other status replies."""
     line = dev.wait_for("# ", 2.0)
     while line is not None and not line.startswith(("# ok", "# err")):
         line = dev.wait_for("# ", 2.0)
@@ -487,11 +411,7 @@ def ack(dev):
 
 
 def isolate(dev, *sensors):
-    """Leave exactly `sensors` enabled, everything else off.
-
-    The desired table survives a reset by design (AR-3), so without this a run
-    measures whatever an earlier test left streaming.
-    """
+    """Disable every sensor outside the requested set, which survives reset (AR-3)."""
     for sensor in HARNESS_SENSORS:
         if sensor not in sensors:
             dev.send(f"off {sensor:02x}")
@@ -504,21 +424,17 @@ def enable(dev, sensor, interval_us):
 
 
 def case_boot(dev, _cfg):
-    # Nothing else streaming, so boot is measured against a quiet bus rather
-    # than whatever an earlier test left enabled.
+    # Disable other sensors before timing boot.
     isolate(dev)
-    # Use the executable-channel reset. Calibration survival is UNCONFIRMED
-    # (FW-2).
+    # Executable-channel reset leaves calibration survival UNCONFIRMED (FW-2).
     dev.send("reset")
     start = time.monotonic()
     ready = dev.wait_for("# ready", READY_TIMEOUT_S)
     elapsed_ms = (time.monotonic() - start) * 1000.0
 
-    # absent_reads counts reads that found no hub. Over a quiet interval with
-    # nothing enabled it stays still while the hub stays on the bus. It cannot
-    # show HR-1: a blind poll of a present hub stretches the clock or reads a
-    # null header, neither of which it counts, so HR-1 is held on the host
-    # (bno085_test ATransportReportingNoDataIsNeverRead).
+    # absent_reads stays at zero while the hub stays on the bus. It cannot
+    # detect blind reads of a present hub (HR-1); bno085_test
+    # ATransportReportingNoDataIsNeverRead holds that on the host (HR-1).
     before = snapshot(dev)
     time.sleep(QUIET_INTERVAL_S)
     after = snapshot(dev)
@@ -565,10 +481,8 @@ def case_ts(dev, cfg):
     events = only(events, cfg.sensor)
     monotonic, jitter_ratio, inversions, worst_delta = timestamp_detail(
         events, interval_us)
-    # PR-3 is monotonicity at the resolution of the fields the time is built
-    # from: the base delta and the report delay are 100 us ticks, the HINTN edge
-    # anchoring them is microseconds. A backward step inside the quantisation
-    # bound is the format's resolution; a larger one is a reconstruction fault.
+    # Judge backward steps at the reconstruction bound, since base delta and
+    # report delay are quantised to 100 us ticks (PR-3).
     ordered = worst_delta > -bound_us
     return {
         "test": "b-ts",
@@ -579,8 +493,7 @@ def case_ts(dev, cfg):
         "worst_delta_us": worst_delta,
         "p99_jitter_intervals": round(jitter_ratio, 3),
         "events": len(events),
-        # Reads served by the HINTN level fallback may carry an earlier edge as
-        # their timestamp anchor, so a nonzero count can explain jitter here.
+        # Level-fallback reads can use an earlier edge and explain jitter.
         "level_fallbacks": stats.get("level_fallbacks", 0),
     }
 
@@ -599,16 +512,12 @@ def nearest_offsets(events, reference):
 
 
 def case_rvphase(dev, cfg):
-    """PR-3: record the rotation vector's phase against the gyroscope.
+    """Record RV-to-gyro phase without gating it (PR-3).
 
-    1000-3927 section 6.8 has fused outputs follow a gyroscope sample, but
-    neither it nor 1000-3625 says which interrupt a fused report is timed from
-    or that the two streams at one rate share a sample phase (FW-2), so PR-3
-    gates no phase. The case passes when the measurement is valid: both streams
-    delivered at one rate inside the granted band, with an interval long
-    enough to separate the sample grid from the bound. Pairing by nearest time
-    sees an offset only modulo the interval, so which sample an RV carries is
-    not measured.
+    The reports' interrupt reference and shared sample phase are UNCONFIRMED
+    (1000-3927 §6.8, 1000-3625) (FW-2). Validity requires one delivered rate within
+    the granted band and an interval that separates the sample grid from the bound.
+    Nearest-time pairing measures phase modulo the interval (PR-3).
     """
     interval_us = round(1_000_000 / cfg.rate_hz)
     bound_us = reconstruction_bound_us(dev)
@@ -642,8 +551,7 @@ def case_rvphase(dev, cfg):
         "median_offset_us": sorted(offsets)[len(offsets) // 2] if offsets else None,
         "worst_offset_us": worst,
         "bound_us": bound_us,
-        # A read served by the HINTN level fallback may carry an earlier edge,
-        # so a nonzero count can explain an offset near the bound.
+        # Level-fallback reads can use an earlier edge and explain a phase offset.
         "level_fallbacks": during(before, stats, "level_fallbacks"),
     }
 
@@ -663,14 +571,10 @@ def case_rvphase(dev, cfg):
 
 
 def case_i2c100(dev, cfg):
-    """PR-2: accelerometer, gyroscope and magnetometer concurrently at 100 Hz.
-
-    Over I2C, with no drops on any of the three. The magnetometer's maximum is
-    100 Hz (datasheet), so this is the whole trio at its ceiling.
-    """
+    """Run accel, gyro and mag at 100 Hz over I2C without drops (PR-2)."""
     interval_us = round(1_000_000 / cfg.i2c100_hz)
     sensors = (ACCELEROMETER, GYROSCOPE, MAGNETOMETER)
-    # PR-2 names I2C, so select it before measuring the trio.
+    # The concurrent-sensor case uses I2C (PR-2).
     if not select_bus(dev, "i2c"):
         return {"test": "b-i2c100", "passed": False, "bus": dev.bus}
     bound_us = reconstruction_bound_us(dev)
@@ -701,9 +605,7 @@ def case_i2c100(dev, cfg):
         result[f"hz_{name}"] = round(rate, 1)
         result[f"gaps_{name}"] = gaps
         result[f"ordered_{name}"] = ordered
-        # Ordering is judged at tick resolution (PR-3); the rate is judged
-        # against the granted-rate band, which is what a conforming hub is
-        # allowed to deliver for a 100 Hz request.
+        # Ordering uses tick resolution (PR-3). Rates use the granted-rate band.
         if (not rows or gaps != 0 or not ordered
                 or not within_granted_band(rate, cfg.i2c100_hz)):
             result["passed"] = False
@@ -716,14 +618,11 @@ def case_reset(dev, cfg):
     before = snapshot(dev)
     want_reenabled = before.get("enabled", 0)
     start = time.monotonic()
-    # The non-destructive reset: recovery is what is under test, not the hub's
-    # willingness to rebuild calibration afterwards.
+    # Executable-channel reset tests recovery without clearing calibration.
     dev.send("reset")
     ready = dev.wait_for("# ready", READY_TIMEOUT_S)
-    # READY is the rising edge, not the end of recovery: the desired sensors are
-    # re-applied over the service() calls that follow it (AR-3), one Set Feature
-    # per pass. Poll until the counters settle rather than sampling once and
-    # racing the re-enable.
+    # READY precedes completion of sensor reapplication (AR-3). Poll until
+    # the recovery counters settle.
     after = {}
     while time.monotonic() - start < RECOVERY_TIMEOUT_S:
         dev.send("stat")
@@ -747,10 +646,9 @@ def case_reset(dev, cfg):
 
 
 def case_rv400(dev, cfg):
-    """PR-1: the rotation vector at its maximum rate, with nothing dropped.
+    """Run rotation vector at 400 Hz over SPI without drops (PR-1).
 
-    400 Hz is the datasheet ceiling for the RV, and needs SPI to sustain.
-    PR-1 names SPI, so this case selects it, as case_i2c100 selects I2C.
+    SPI is selected for the requirement (PR-1).
     """
     interval_us = round(1_000_000 / cfg.rv400_hz)
     if not select_bus(dev, "spi"):
@@ -759,7 +657,7 @@ def case_rv400(dev, cfg):
     isolate(dev, ROTATION_VECTOR)
     enable(dev, ROTATION_VECTOR, interval_us)
     before = snapshot(dev)
-    # HR-4: retain every event while a write reconfigures a second sensor.
+    # Retain events while a write reconfigures a second sensor (HR-4).
     events, stats = dev.collect_run(
         cfg.rv400_duration * 1000, reconfigure=(ACCELEROMETER, 20_000))
     reconfigured = stats.get("midstream_reconfigured", False)
@@ -787,11 +685,9 @@ def case_rv400(dev, cfg):
 
 
 def case_girv(dev, cfg):
-    """PR-4: the gyro-integrated rotation vector, which has its own SHTP channel.
+    """Run gyro-integrated RV over SPI on its own channel (PR-4).
 
-    It carries no sequence or delay fields — one report per transfer, so its
-    rate is the clearest measure of the transport's throughput. PR-4 names
-    SPI, so this case selects it.
+    SPI is selected for the requirement (PR-4).
     """
     interval_us = round(1_000_000 / cfg.girv_hz)
     if not select_bus(dev, "spi"):
@@ -816,20 +712,13 @@ def case_girv(dev, cfg):
 
 
 def case_lat(dev, cfg):
-    """HR-5: the worst gap between HINTN asserting and the read answering it.
-
-    The hub deasserts and retries if left unserviced for around 10 ms, so this
-    is the margin against that, measured under a load worth measuring.
-    """
+    """Measure the worst HINTN-to-read gap under load (HR-5)."""
     interval_us = round(1_000_000 / cfg.rate_hz)
     isolate(dev, cfg.sensor)
     enable(dev, cfg.sensor, interval_us)
     before = snapshot(dev)
     _, stats = dev.collect_run(cfg.duration * 1000)
-    # The firmware clears the peak at the start of every `run`, so this is a
-    # per-run high-water mark and not a session one. That windowing is what
-    # makes it describe the loop: left cumulative it reports the startup
-    # outlier, where the reset hold and boot delay are timed waits by design.
+    # The firmware clears the latency peak for each run, excluding startup waits.
     worst = stats.get("service_latency_max_us", 0)
     fallbacks = during(before, stats, "level_fallbacks")
     return {
@@ -837,18 +726,13 @@ def case_lat(dev, cfg):
         "passed": 0 < worst <= cfg.latency_budget_us,
         "worst_service_us": worst,
         "budget_us": cfg.latency_budget_us,
-        # A level-fallback read has no fresh edge, so it is excluded from the
-        # measurement; a large count means the figure covers fewer reads.
+        # Fallbacks lack a fresh edge and are excluded from latency measurement.
         "level_fallbacks": fallbacks,
     }
 
 
 def case_heap(dev, cfg):
-    """AR-1: nothing on the steady-state path allocates.
-
-    The watermark is armed once the session is constructed, so any growth is
-    growth after init.
-    """
+    """Check zero heap growth after session construction (AR-1)."""
     interval_us = round(1_000_000 / cfg.rate_hz)
     isolate(dev, cfg.sensor)
     enable(dev, cfg.sensor, interval_us)
@@ -871,12 +755,7 @@ def case_heap(dev, cfg):
 
 
 def case_parity(dev, cfg):
-    """HR-4: both buses deliver the same stream.
-
-    Runs the identical scenario on each and compares, which is why the bus is
-    selectable at run time — the alternative is two flashes and a comparison
-    across sessions.
-    """
+    """Compare identical streams over both buses in one session (HR-4)."""
     interval_us = round(1_000_000 / cfg.rate_hz)
     result = {"test": "b-parity", "passed": True, "bus": []}
     seen = {}
@@ -904,8 +783,7 @@ def case_parity(dev, cfg):
     if len(seen) == 2:
         faster = max(seen.values())
         slower = min(seen.values())
-        # Both are asked for the same rate, so they should land together; a
-        # difference beyond a tenth is one bus failing to keep up.
+        # Both buses should deliver the same requested rate within a tenth.
         agree = faster > 0 and (faster - slower) / faster <= 0.1
         result["agree"] = agree
         if not agree:
@@ -914,10 +792,7 @@ def case_parity(dev, cfg):
 
 
 def case_soak(dev, cfg):
-    """OR-1: a long run at a working rate.
-
-    Drops and gaps stay at zero and no reset is needed.
-    """
+    """Run at a working rate with no drops, gaps or resets (OR-1)."""
     interval_us = round(1_000_000 / cfg.rate_hz)
     isolate(dev, cfg.sensor)
     enable(dev, cfg.sensor, interval_us)
@@ -943,11 +818,7 @@ def case_soak(dev, cfg):
 
 
 def wait_ready(dev):
-    """Wait for the hub to reach READY.
-
-    '# ready' marks the rising edge, which the firmware may have passed before
-    the port was opened; fall back to asking for a stats line.
-    """
+    """Wait for READY. Query stats if the port missed the '# ready' transition."""
     if dev.wait_for("# ready", READY_TIMEOUT_S) is not None:
         return True
     dev.send("stat")
@@ -1013,8 +884,7 @@ def main():
                         default=str(Path(__file__).resolve().parent / "baselines"))
     cfg = parser.parse_args()
 
-    # Validate the selection before touching hardware: a typo should fail
-    # immediately, not after a board has been found and reset.
+    # A selection typo should fail before hardware is touched.
     selected = [t for t in cfg.tests.split(",") if t]
     unknown = [t for t in selected if t not in TESTS]
     if unknown:
@@ -1034,8 +904,7 @@ def main():
     except OSError as exc:
         # serial.SerialException is an OSError; so is a missing COM port.
         sys.exit(f"cannot open {port}: {exc}")
-    # One image serves both buses and comes up with neither selected, so the
-    # harness chooses before anything is measured.
+    # The firmware starts without a bus selected.
     if not select_bus(dev, cfg.bus):
         print(f"warning: the device never reached READY on {cfg.bus}; is the "
               "bench firmware flashed and the BNO085 wired?")
@@ -1044,14 +913,12 @@ def main():
     results = []
     for name in selected:
         result = TESTS[name](dev, cfg)
-        # Every result records the bus it ran on. A case that selects its own
-        # leaves the session there, so the run's bus is selected again before
-        # the next case, which then runs where the record says it did.
+        # Restore the session bus after cases that select their own so each result
+        # records the bus actually used.
         result.setdefault("bus", dev.bus)
         results.append(result)
         if name in OWN_BUS and not select_bus(dev, cfg.bus):
-            # Every later case would run on whatever bus the session is left
-            # on, so the run ends here, failed.
+            # A bus-selection failure would send later cases to the wrong bus.
             results.append({"test": "reselect", "passed": False,
                             "bus": dev.bus, "after": name})
             break
@@ -1066,15 +933,10 @@ def main():
         print(f"{result['test']:10} {verdict:6}  {detail}")
 
     if cfg.promote:
-        # UTC, not local time: a baseline filename is compared across machines
-        # and a local stamp orders them by the writer's timezone.
+        # UTC keeps baseline filenames ordered across time zones.
         now = datetime.datetime.now(datetime.UTC)
         path = Path(cfg.output_dir) / f"bench-{now:%Y%m%d-%H%M%S}.json"
-        # A baseline records the conditions it was taken under, not just its
-        # numbers. Without them a run cannot be audited later -- which bus it
-        # used, which port, what the firmware reported about itself -- and the
-        # conditions end up in prose beside the file, where they drift from it.
-        # Matches the header pico-http's baselines carry.
+        # Keep run conditions with the measured values in the baseline.
         document = {
             "timestamp": now.isoformat(timespec="seconds"),
             "port": cfg.port,

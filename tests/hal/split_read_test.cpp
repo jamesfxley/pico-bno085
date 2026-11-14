@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MIT
-// HR-6: undoing the traces of a split read, and HR-2: telling a hub that left
-// the bus apart from a bus that is wedged.
+// Compensate split reads and distinguish hub absence from bus faults (HR-6,
+// HR-2).
 #include "pico_bno085/hal/split_read.hpp"
 
 #include <gtest/gtest.h>
@@ -18,8 +18,7 @@ using pico_bno085::hal::classify;
 using pico_bno085::hal::SplitReadCompensator;
 using pico_bno085::hal::TransferOutcome;
 
-// A transfer as the hub re-offers it after a header peek: the continuation flag
-// set, and the sequence number the hub has reached.
+// A reoffered transfer with the peek's continuation flag and advanced sequence.
 std::vector<std::uint8_t> reoffered(std::uint16_t length, std::uint8_t channel,
                                     std::uint8_t sequence) {
     const auto field =
@@ -30,7 +29,7 @@ std::vector<std::uint8_t> reoffered(std::uint16_t length, std::uint8_t channel,
 }
 
 TEST(Classify, MapsTheSdkCodesToBusMeaning) {
-    // HR-2: an unacknowledged address is the hub leaving, not a fault.
+    // an unacknowledged address is the hub leaving, not a fault (HR-2).
     EXPECT_EQ(classify(pico_bno085::hal::SDK_ERROR_GENERIC),
               TransferOutcome::HUB_ABSENT);
     EXPECT_EQ(classify(pico_bno085::hal::SDK_ERROR_TIMEOUT),
@@ -45,7 +44,6 @@ TEST(SplitRead, ClearsTheContinuationTheHostsOwnPeekCaused) {
     auto transfer = reoffered(20, 3, 1);
     compensator.on_cargo(transfer, 3, false);
 
-    // Bit 15 of the length field is gone: the engine sees a lead transfer.
     EXPECT_EQ(static_cast<unsigned>(transfer[1]) & 0x80U, 0);
     EXPECT_EQ(transfer[0], 20);
 }
@@ -56,8 +54,8 @@ TEST(SplitRead, KeepsTheContinuationWhenTheHubStillHoldsARemainder) {
     compensator.on_cargo(first, 3, /*truncated=*/true);
     EXPECT_TRUE(compensator.cargo_incomplete());
 
-    // The next transfer's flag is the hub's own reassembly state, not an
-    // artefact of the peek, so it must survive.
+    // The continuation flag must survive when it represents hub reassembly
+    // state.
     auto second = reoffered(300, 3, 3);
     compensator.on_cargo(second, 3, /*truncated=*/false);
     EXPECT_NE(static_cast<unsigned>(second[1]) & 0x80U, 0);
@@ -65,8 +63,8 @@ TEST(SplitRead, KeepsTheContinuationWhenTheHubStillHoldsARemainder) {
 
 TEST(SplitRead, RestoresAOnePerCargoSequence) {
     SplitReadCompensator compensator;
-    // The hub advances two sequence numbers per cargo (peek + body), so three
-    // cargoes arrive numbered 1, 3, 5. The engine must see 0, 1, 2.
+    // Peek and body reads advance sequences to 1, 3, 5. The engine must see 0,
+    // 1, 2.
     std::array<std::uint8_t, 3> raw = {1, 3, 5};
     std::array<std::uint8_t, 3> seen{};
     for (std::size_t i = 0; i < raw.size(); ++i) {
@@ -97,15 +95,11 @@ TEST(SplitRead, TracksEachChannelSeparately) {
     compensator.on_cargo(chan3, 3, false);
     auto chan4 = reoffered(20, 4, 1);
     compensator.on_cargo(chan4, 4, false);
-    // Channel 4's own peek count is 1, not 2: the channels do not share it.
     EXPECT_EQ(chan3[3], 0);
     EXPECT_EQ(chan4[3], 0);
 }
 
-// A null header is not a cargo, so the hub's sequence number does not move for
-// it (1000-3535 §2.2, §2.3.1). The BNO086 answers every idle poll this way, so
-// treating one as a consumed sequence would desynchronise the correction on a
-// bus that is behaving perfectly.
+// Null headers consume no cargo sequence number (1000-3535 §§2.2, 2.3.1).
 TEST(SplitRead, ANullHeaderConsumesNoSequenceNumber) {
     SplitReadCompensator compensator;
     auto first = reoffered(20, 3, 1);
@@ -116,7 +110,6 @@ TEST(SplitRead, ANullHeaderConsumesNoSequenceNumber) {
         compensator.on_null_header();
     }
 
-    // The next real cargo is still the hub's next sequence number.
     auto second = reoffered(20, 3, 3);
     compensator.on_cargo(second, 3, false);
     EXPECT_EQ(second[3], 1);
@@ -131,7 +124,6 @@ TEST(SplitRead, HubAbsenceDropsTheStateTheHubAbandoned) {
     compensator.on_hub_absent();
     EXPECT_FALSE(compensator.cargo_incomplete());
 
-    // The hub restarts its sequence numbers, and so does the correction.
     auto after = reoffered(20, 3, 1);
     compensator.on_cargo(after, 3, false);
     EXPECT_EQ(static_cast<unsigned>(after[1]) & 0x80U,

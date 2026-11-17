@@ -17,7 +17,7 @@ lint and gate commands. `python3 dev.py check --ci` runs offline checks;
 packages.
 
 Firmware requires `PICO_SDK_PATH`. `HOUSE_MATRIX_BOARD` chooses the board.
-`HOUSE_MATRIX_SANITIZE=ON` enables the sanitizer tree.
+`HOUSE_MATRIX_SANITIZE=address` or `thread` enables the sanitizer tree.
 `HOUSE_MATRIX_PROFILE` selects `PICO_BNO085_PROFILE` (`default` or `large`),
 which forwards to pico-sh2. Both profiles have host tests, installed consumers
 and firmware footprint checks.

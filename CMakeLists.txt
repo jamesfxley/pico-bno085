@@ -64,16 +64,16 @@ pico_family_propagate_install(PICO_BNO085 PICO_SH2 PICO_LOGGING PICO_UTIL)
 # Declare direct pins before population to resolve the dependency diamond.
 pico_family_dependency(pico_sh2
     REPOSITORY https://github.com/jamesfxley/pico-sh2.git
-    REVISION 0bc759bbccf4ee14e6de08918a6bad450929a783)
+    REVISION 4eb9a2fec066eb21e8694714eee182c8200e6e94)
 pico_family_dependency(pico_logging
     REPOSITORY https://github.com/jamesfxley/pico-logging.git
-    REVISION fe23964417288a0dedfa27ddbd7e2f85b0915bae)
+    REVISION 724f4555863d60fb68b1ddff944c0ce89398c16a)
 
 # All consumers use pico_util::Result. Declare the pin before population.
 # Discarded results produce a compiler diagnostic (pico_util:FR-6).
 pico_family_dependency(pico_util
     REPOSITORY https://github.com/jamesfxley/pico-util.git
-    REVISION 2afe3150a52429cb61c2330041cb4ec2e26c00ef)
+    REVISION 870e68b33012c9052d3336be4ad9abd58d44d4d1)
 
 pico_family_make_available(pico_sh2 pico_logging pico_util)
 

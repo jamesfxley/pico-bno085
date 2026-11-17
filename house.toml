@@ -37,9 +37,11 @@ message = "PICO_BNO085 needs PICO_PLATFORM rp2350"
 [ci.axes]
 profile = "PICO_BNO085_PROFILE"
 
+# ThreadSanitizer cannot run under Docker's default seccomp filter (infra AR-2).
 [[ci.require]]
 group = "build"
-matrix = { build_type = ["Debug", "Release"], sanitize = ["ON"], profile = ["default", "large"] }
+matrix = { build_type = ["Debug", "Release"], sanitize = ["address", "thread"], profile = ["default", "large"] }
+container_options = "--security-opt seccomp=unconfined"
 
 [[ci.require]]
 group = "firmware"

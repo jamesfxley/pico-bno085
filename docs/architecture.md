@@ -173,7 +173,8 @@ Consumers set control lines in `ControlConfig` and bus pins and the peripheral
 instance in the transport's `Config`. The
 [usage guide](usage-guide.md#pins-the-bno085-multiplexes) describes the pin-mux
 rules.
-`init()` returns `INVALID_ARGUMENT` for unreachable or out-of-bank bus pins.
+`init()` returns `INVALID_ARGUMENT` for unreachable or out-of-bank bus pins
+and an out-of-bank HINTN pin.
 
 ## Bus selection
 

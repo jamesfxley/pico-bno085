@@ -29,8 +29,8 @@ class HintnLatch {
     /// Configure HINTN with a pull-up and falling-edge interrupt.
     /// Repeated calls reuse the registration. Dispatch changes preserve the
     /// bank state.
-    /// \return TABLE_FULL if no dispatch slot is available. Enables the GPIO
-    /// bank.
+    /// \return INVALID_ARGUMENT if pin is outside bank 0, TABLE_FULL if no
+    /// dispatch slot is available. Enables the GPIO bank on success.
     pico_sh2::Result<void> begin(std::uint32_t pin);
 
     /// Release the registration, preserving the GPIO bank's enabled state.

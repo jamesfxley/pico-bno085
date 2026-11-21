@@ -69,7 +69,8 @@ class TransportCore {
     void begin_straps() { control_.init(); }
 
     /// Arm HINTN after bus configuration.
-    /// \return TABLE_FULL if no dispatch slot is available.
+    /// \return INVALID_ARGUMENT if the HINTN pin is outside bank 0,
+    /// TABLE_FULL if no dispatch slot is available.
     pico_sh2::Result<void> arm_interrupt() {
         return hintn_.begin(config_.hintn_pin);
     }

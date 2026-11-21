@@ -61,7 +61,8 @@ pico_sh2::Result<void> I2cHalTransport::init() {
     constexpr detail::MuxBounds BOUNDS{.gpio_count = NUM_BANK0_GPIOS};
     const std::uint32_t index = i2c_get_index(config_.instance);
     if (!detail::i2c_sda(config_.sda_pin, index, BOUNDS) ||
-        !detail::i2c_scl(config_.scl_pin, index, BOUNDS)) {
+        !detail::i2c_scl(config_.scl_pin, index, BOUNDS) ||
+        !detail::in_bank(config_.control.hintn_pin, BOUNDS)) {
         return pico_sh2::Sh2Error::INVALID_ARGUMENT;
     }
     // Straps and NRST first, hub held in reset until the session releases it.

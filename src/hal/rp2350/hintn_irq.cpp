@@ -2,6 +2,7 @@
 #include "pico_bno085/hal/hintn_irq.hpp"
 
 #include <hardware/irq.h>
+#include <hardware/platform_defs.h>
 #include <hardware/regs/intctrl.h>
 #include <hardware/timer.h>
 #include <pico/types.h>
@@ -17,6 +18,9 @@ namespace pico_bno085::hal {
 
 namespace {
 
+// The dispatch mask has one bit per bank-0 GPIO.
+static_assert(NUM_BANK0_GPIOS <= 64);
+
 // One entry per concurrently wired hub; a single IMU needs one.
 constexpr std::size_t MAX_LATCHES = 2;
 
@@ -25,7 +29,7 @@ constexpr std::size_t MAX_LATCHES = 2;
 // registering the same pin twice asserts (hardware/gpio.h).
 struct DispatchTable {
     std::array<HintnLatch*, MAX_LATCHES> latches{};
-    std::uint32_t raw_mask = 0;
+    std::uint64_t raw_mask = 0;
 };
 
 // cppcoreguidelines-avoid-non-const-global-variables: the SDK handler takes
@@ -50,18 +54,18 @@ void dispatch() {
     }
 }
 
-std::uint32_t latched_pin_mask() {
-    std::uint32_t mask = 0;
+std::uint64_t latched_pin_mask() {
+    std::uint64_t mask = 0;
     for (const HintnLatch* latch : g_dispatch.latches) {
         if (latch != nullptr) {
-            mask |= 1U << latch->pin();
+            mask |= std::uint64_t{1} << latch->pin();
         }
     }
     return mask;
 }
 
 // Update the registered mask only when it changes to avoid duplicate claims.
-void install_dispatch(std::uint32_t mask) {
+void install_dispatch(std::uint64_t mask) {
     if (mask == g_dispatch.raw_mask) {
         return;
     }
@@ -69,10 +73,10 @@ void install_dispatch(std::uint32_t mask) {
     const bool was_enabled = irq_is_enabled(IO_IRQ_BANK0);
     irq_set_enabled(IO_IRQ_BANK0, false);
     if (g_dispatch.raw_mask != 0) {
-        gpio_remove_raw_irq_handler_masked(g_dispatch.raw_mask, &dispatch);
+        gpio_remove_raw_irq_handler_masked64(g_dispatch.raw_mask, &dispatch);
     }
     if (mask != 0) {
-        gpio_add_raw_irq_handler_masked(mask, &dispatch);
+        gpio_add_raw_irq_handler_masked64(mask, &dispatch);
     }
     g_dispatch.raw_mask = mask;
     irq_set_enabled(IO_IRQ_BANK0, was_enabled);
@@ -105,6 +109,9 @@ void unregister_latch(const HintnLatch* latch) {
 }  // namespace
 
 pico_sh2::Result<void> HintnLatch::begin(std::uint32_t pin) {
+    if (pin >= NUM_BANK0_GPIOS) {
+        return pico_sh2::Sh2Error::INVALID_ARGUMENT;
+    }
     if (!register_latch(this)) {
         return pico_sh2::Sh2Error::TABLE_FULL;
     }

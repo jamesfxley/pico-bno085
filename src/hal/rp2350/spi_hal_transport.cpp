@@ -59,7 +59,8 @@ pico_sh2::Result<void> SpiHalTransport::init() {
     if (!detail::spi_rx(config_.miso_pin, index, BOUNDS) ||
         !detail::spi_sck(config_.sck_pin, index, BOUNDS) ||
         !detail::spi_tx(config_.mosi_pin, index, BOUNDS) ||
-        !detail::in_bank(config_.csn_pin, BOUNDS)) {
+        !detail::in_bank(config_.csn_pin, BOUNDS) ||
+        !detail::in_bank(config_.control.hintn_pin, BOUNDS)) {
         return pico_sh2::Sh2Error::INVALID_ARGUMENT;
     }
     // Straps and NRST first (PS1:PS0 = 1:1 selects SPI), hub held in reset.

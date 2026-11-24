@@ -553,6 +553,56 @@ TEST(Bno085, PeriodicDcdSaveSendsTheManualsEncoding) {
     }
 }
 
+// 1000-3625 6.4.7 and 6.4.9.1: the hub sends no response to these commands,
+// so they neither hold the command slot nor raise a command timeout.
+enum class ResponselessCommand : std::uint8_t {
+    PERIODIC_DCD_ENABLE,
+    PERIODIC_DCD_DISABLE,
+    CLEAR_DCD_AND_RESET
+};
+
+constexpr std::array<ResponselessCommand, 3> RESPONSELESS_COMMANDS{
+    ResponselessCommand::PERIODIC_DCD_ENABLE,
+    ResponselessCommand::PERIODIC_DCD_DISABLE,
+    ResponselessCommand::CLEAR_DCD_AND_RESET};
+
+Result<void> send_responseless(Bno085& driver, ResponselessCommand command) {
+    switch (command) {
+        case ResponselessCommand::PERIODIC_DCD_ENABLE:
+            return driver.set_periodic_dcd(true);
+        case ResponselessCommand::PERIODIC_DCD_DISABLE:
+            return driver.set_periodic_dcd(false);
+        case ResponselessCommand::CLEAR_DCD_AND_RESET:
+            break;
+    }
+    return driver.clear_dcd_and_reset();
+}
+
+TEST(Bno085, ResponselessCommandsDoNotHoldTheCommandSlot) {
+    for (const ResponselessCommand command : RESPONSELESS_COMMANDS) {
+        FakeHub hub;
+        Bno085 driver(hub);
+        drive_to_ready(hub, driver);
+        ASSERT_TRUE(send_responseless(driver, command).ok());
+        driver.service();
+        EXPECT_TRUE(driver.save_dcd().ok());
+    }
+}
+
+TEST(Bno085, ResponselessCommandsRaiseNoCommandTimeout) {
+    for (const ResponselessCommand command : RESPONSELESS_COMMANDS) {
+        FakeHub hub;
+        Bno085 driver(hub);
+        drive_to_ready(hub, driver);
+        ASSERT_TRUE(send_responseless(driver, command).ok());
+        driver.service();
+        const auto diag_events = driver.stats().diag_events;
+        hub.advance_time(pico_bno085::bno085_timing().command_timeout_us + 1);
+        driver.service();
+        EXPECT_EQ(driver.stats().diag_events, diag_events);
+    }
+}
+
 TEST(Bno085, TareNowEmitsCommandWithParams) {
     FakeHub hub;
     Bno085 driver(hub);

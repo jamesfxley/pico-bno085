@@ -360,8 +360,9 @@ class Bno085 {
     /// enable, 1 to disable.
     Result<void> set_periodic_dcd(bool enable);
 
-    /// Discard dynamic calibration and reset. Desired sensors are reapplied
-    /// after the handshake (1000-3625 §6.4.9.1).
+    /// Discard dynamic calibration and reset. The hub sends no response; it
+    /// reports an unsolicited Initialization Response as after any reset.
+    /// Desired sensors are reapplied after the handshake (1000-3625 §6.4.9.1).
     /// Use reset() to restart without clearing DCD. Calibration survival is
     /// UNCONFIRMED (FW-2).
     Result<void> clear_dcd_and_reset();

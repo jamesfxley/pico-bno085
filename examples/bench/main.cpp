@@ -1,17 +1,17 @@
 // SPDX-License-Identifier: MIT
-// Device benchmark. The line protocol and checklist are in README.md.
+// Device benchmark. The line protocol is specified in
+// docs/technical-specification.md (LP); the checklist is in README.md.
 // Heap growth is measured after session construction (AR-1).
 #include <hardware/timer.h>
 #include <pico/error.h>
 #include <pico/stdio.h>
 
 #include <array>
-#include <charconv>
 #include <cstdint>
 #include <cstdio>
 #include <string_view>
-#include <system_error>
 
+#include "bench_protocol.hpp"
 #include "pico_bno085/driver/bno085.hpp"
 #include "pico_bno085/hal/i2c_hal_transport.hpp"
 #include "pico_bno085/hal/spi_hal_transport.hpp"
@@ -20,6 +20,7 @@
 #include "pico_sh2/reports/decoders.hpp"
 #include "pico_sh2/reports/sensor_event.hpp"
 #include "pico_sh2/reports/sensor_id.hpp"
+#include "pico_sh2/sh2/command.hpp"
 #include "pico_sh2/sh2/hal_transport.hpp"
 #include "pico_sh2/sh2/session.hpp"
 #include "pico_sh2/util/result.hpp"
@@ -27,13 +28,15 @@
 
 namespace {
 
+using pico_bno085::bench::BASE_DEC;
+using pico_bno085::bench::BASE_HEX;
+using pico_bno085::bench::LINE_BUFFER_SIZE;
+using pico_bno085::bench::take_uint;
 using pico_sh2::reports::SensorEvent;
 using pico_sh2::reports::SensorId;
 
 constexpr std::uint64_t US_PER_MS = 1'000;
 constexpr std::size_t LINE_CAP = 64;
-constexpr int BASE_DEC = 10;
-constexpr int BASE_HEX = 16;
 
 // Timestamp tick in microseconds (1000-3625 §7.2.1) (PR-3).
 constexpr unsigned TICK_US = 100;
@@ -89,6 +92,8 @@ const char* g_bus_name = "none";
 // Streaming state for the active `run`, updated by the event sink.
 struct Run {
     bool streaming = false;
+    // Payload lines replace E lines for kinds that have one (LP-5).
+    bool payload = false;
     std::uint32_t events = 0;
 };
 
@@ -108,11 +113,29 @@ void on_event(void* ctx, const SensorEvent& event) {
         return;
     }
     ++run->events;
-    // Event fields are sensor, sequence, reconstructed time and accuracy.
-    printf("E,%u,%u,%llu,%u\n", static_cast<unsigned>(event.sensor),
-           static_cast<unsigned>(event.sequence),
-           static_cast<unsigned long long>(event.event_us),
-           static_cast<unsigned>(event.accuracy));
+    // One line per event: E, or its payload line when payload is on (LP-4,
+    // LP-5). Formatting into a buffer keeps the bytes those of the host test.
+    std::array<char, LINE_BUFFER_SIZE> line{};
+    if (pico_bno085::bench::format_event(line, event, run->payload) > 0) {
+        printf("%s", line.data());
+    }
+}
+
+// The command whose response the host is waiting for, or zero. Other
+// responses, such as the Initialize response of each boot, stay unprinted so
+// that output without a bench command is unchanged (LP-7).
+std::uint8_t g_awaited_command = 0;
+
+void on_command_response(void* /*ctx*/,
+                         const pico_sh2::CommandResponse& response) {
+    if (g_awaited_command == 0 || response.command != g_awaited_command) {
+        return;
+    }
+    g_awaited_command = 0;
+    std::array<char, LINE_BUFFER_SIZE> line{};
+    if (pico_bno085::bench::format_command_response(line, response) > 0) {
+        printf("%s", line.data());
+    }
 }
 
 // Clear the latency peak on the selected transport before each run.
@@ -169,20 +192,6 @@ void print_stats(const pico_bno085::Bno085& imu) {
 constexpr std::string_view arguments(std::string_view line,
                                      std::string_view prefix) {
     return line.substr(prefix.size());
-}
-
-// Parse and advance past an unsigned field. Return false if no digits parse.
-bool take_uint(std::string_view& text, unsigned& out, int base) {
-    while (!text.empty() && text.front() == ' ') {
-        text.remove_prefix(1);
-    }
-    auto [ptr, ec] =
-        std::from_chars(text.data(), text.data() + text.size(), out, base);
-    if (ec != std::errc()) {
-        return false;
-    }
-    text.remove_prefix(static_cast<std::size_t>(ptr - text.data()));
-    return true;
 }
 
 // Read a command without blocking service(). Return an empty view until
@@ -345,6 +354,80 @@ bool handle_bare_command(pico_bno085::Bno085& imu, std::string_view line) {
     return true;
 }
 
+// Reply with the driver's refusal named (LP-3).
+void print_refusal(pico_bno085::Error error) {
+    const std::string_view name = pico_bno085::bench::error_name(error);
+    printf("# err %.*s\n", static_cast<int>(name.size()), name.data());
+}
+
+// Reply to a command that the hub answers later (LP-3, LP-7). An accepted
+// command makes its response the next one printed.
+void report_awaited(const pico_bno085::Result<void>& result,
+                    std::uint8_t command) {
+    if (result.ok()) {
+        g_awaited_command = command;
+        printf("# ok\n");
+    } else {
+        print_refusal(result.error());
+    }
+}
+
+// tare/tarepersist/cal/calget/savedcd/pdcd (LP-2).
+bool handle_calibration_command(pico_bno085::Bno085& imu,
+                                std::string_view line) {
+    using pico_bno085::bench::parse_calibration;
+    using pico_bno085::bench::parse_flag;
+    using pico_bno085::bench::parse_tare;
+    if (line.starts_with("tare ")) {
+        const auto options = parse_tare(arguments(line, "tare "));
+        if (!options) {
+            printf("# err parse\n");
+        } else {
+            report_awaited(imu.tare_now(*options), pico_sh2::command::TARE);
+        }
+        return true;
+    }
+    if (line == "tarepersist") {
+        report_awaited(imu.persist_tare(), pico_sh2::command::TARE);
+        return true;
+    }
+    if (line.starts_with("cal ")) {
+        const auto options = parse_calibration(arguments(line, "cal "));
+        if (!options) {
+            printf("# err parse\n");
+        } else {
+            report_awaited(imu.configure_dynamic_calibration(*options),
+                           pico_sh2::command::ME_CALIBRATION);
+        }
+        return true;
+    }
+    if (line == "calget") {
+        // Subcommand 1 reads the enable state (1000-3625 §6.4.6.2).
+        constexpr std::array<std::uint8_t, 4> GET_ME_CALIBRATION{0, 0, 0, 1};
+        report_awaited(imu.send_command(pico_sh2::command::ME_CALIBRATION,
+                                        GET_ME_CALIBRATION),
+                       pico_sh2::command::ME_CALIBRATION);
+        return true;
+    }
+    if (line == "savedcd") {
+        report_awaited(imu.save_dcd(), pico_sh2::command::SAVE_DCD);
+        return true;
+    }
+    if (line.starts_with("pdcd ")) {
+        const auto enable = parse_flag(arguments(line, "pdcd "));
+        if (!enable) {
+            printf("# err parse\n");
+        } else if (const auto sent = imu.set_periodic_dcd(*enable); sent.ok()) {
+            // The hub sends no response (1000-3625 §6.4.7).
+            printf("# ok\n");
+        } else {
+            print_refusal(sent.error());
+        }
+        return true;
+    }
+    return false;
+}
+
 void handle_command(pico_bno085::Bno085& imu, std::string_view line,
                     std::uint64_t& run_deadline_us) {
     if (line.starts_with("bus ")) {
@@ -353,6 +436,17 @@ void handle_command(pico_bno085::Bno085& imu, std::string_view line,
     }
     if (line == "info") {
         print_info();
+        return;
+    }
+    if (line.starts_with("payload ")) {
+        const auto payload =
+            pico_bno085::bench::parse_flag(arguments(line, "payload "));
+        if (!payload) {
+            printf("# err parse\n");
+            return;
+        }
+        g_run.payload = *payload;
+        printf("# payload %u\n", *payload ? 1U : 0U);
         return;
     }
 
@@ -364,7 +458,8 @@ void handle_command(pico_bno085::Bno085& imu, std::string_view line,
 
     if (handle_sensor_command(imu, line) ||
         handle_timed_command(line, run_deadline_us) ||
-        handle_bare_command(imu, line)) {
+        handle_bare_command(imu, line) ||
+        handle_calibration_command(imu, line)) {
         return;
     }
     // Silence would cost the harness a read timeout per typo.
@@ -382,6 +477,8 @@ int main() {
 
     pico_bno085::Bno085& imu = g_imu;
     imu.set_event_sink(pico_sh2::reports::EventSink(&on_event, &g_run));
+    imu.set_command_sink(
+        pico_sh2::Session::CommandSink(&on_command_response, nullptr));
 
     // Arm after session construction to measure steady-state growth (AR-1).
     g_heap.arm();

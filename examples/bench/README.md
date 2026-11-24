@@ -37,26 +37,11 @@ the bus acknowledged by the firmware (both replies for b-parity).
 
 ## Line protocol
 
-Commands occupy one line. Replies begin `#` and telemetry begins `E,`.
-
-| Command | Does |
-|---|---|
-| `bus i2c\|spi` | Bring up a bus. Switching re-straps with the hub held in reset. |
-| `cfg <id_hex> <us>` | Enable or reconfigure a sensor at a report interval |
-| `off <id_hex>` | Disable a sensor |
-| `flush <id_hex>` | Make a batching sensor deliver now |
-| `run <ms>` | Stream events, then a `# stats` summary and `# done` |
-| `stat` | A `# stats` line now |
-| `heap` | Post-init heap growth |
-| `reset` | Restart the hub, using the executable-channel reset |
-| `cleardcd` | Clear the calibration and reset |
-| `trace 0\|1` | Dump the raw bytes of every transfer |
-| `boot` | Re-run the handshake without reflashing |
-| `info` | Constants the harness needs to read the output |
-
-Telemetry is `E,<sensor>,<seq>,<event_us>,<accuracy>`. The stats line is
-`key=value` pairs, and the session's counters are emitted by walking the set,
-so a counter added in pico-sh2 appears here without an edit.
+Commands occupy one line. Replies begin `#` and telemetry begins with a tag
+letter. The commands, replies, telemetry lines, number formats, units and frames
+are specified in [the technical specification](../../docs/technical-specification.md#8-bench-line-protocol-requirements-lp)
+(LP-1 to LP-8). Payload lines are off at power-up, and `bench.py` turns them
+off before it selects a bus, because the checklist counts `E` lines.
 
 ## The checklist
 

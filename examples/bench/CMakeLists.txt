@@ -1,5 +1,5 @@
-# Firmware benchmark with runtime bus selection. The line protocol is in
-# README.md.
+# Firmware benchmark with runtime bus selection. The line protocol is specified
+# in docs/technical-specification.md (LP).
 
 add_executable(pico_bno085_bench main.cpp)
 

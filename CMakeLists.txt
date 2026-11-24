@@ -64,7 +64,7 @@ pico_family_propagate_install(PICO_BNO085 PICO_SH2 PICO_LOGGING PICO_UTIL)
 # Declare direct pins before population to resolve the dependency diamond.
 pico_family_dependency(pico_sh2
     REPOSITORY https://github.com/jamesfxley/pico-sh2.git
-    REVISION 4eb9a2fec066eb21e8694714eee182c8200e6e94)
+    REVISION 1ead5c29413c462f97d81d9d48cb59fcc4a16558)
 pico_family_dependency(pico_logging
     REPOSITORY https://github.com/jamesfxley/pico-logging.git
     REVISION 724f4555863d60fb68b1ddff944c0ce89398c16a)

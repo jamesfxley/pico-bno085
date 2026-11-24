@@ -290,9 +290,12 @@ int main() {
     i2c_other.instance = i2c.instance == i2c0 ? i2c1 : i2c0;
     auto i2c_outside = i2c;
     i2c_outside.sda_pin = NUM_BANK0_GPIOS;
+    auto i2c_hintn_outside = i2c;
+    i2c_hintn_outside.control.hintn_pin = NUM_BANK0_GPIOS;
     static I2c swapped_i2c{i2c_swapped};
     static I2c other_i2c{i2c_other};
     static I2c outside_i2c{i2c_outside};
+    static I2c hintn_outside_i2c{i2c_hintn_outside};
     const std::array i2c_pins{
         i2c.sda_pin,     i2c.scl_pin,     control.hintn_pin, control.nrst_pin,
         control.ps0_pin, control.ps1_pin, control.bootn_pin, control.sa0_pin};
@@ -306,6 +309,8 @@ int main() {
                   i2c_pins);
     check_refusal(run, state, "i2c-refuses-a-pin-outside-bank-0", outside_i2c,
                   i2c_outside_pins);
+    check_refusal(run, state, "i2c-refuses-a-hintn-pin-outside-bank-0",
+                  hintn_outside_i2c, i2c_pins);
 
     const Spi::Config spi{};
     auto spi_swapped = spi;
@@ -315,9 +320,12 @@ int main() {
     spi_other.instance = spi.instance == spi0 ? spi1 : spi0;
     auto spi_outside = spi;
     spi_outside.csn_pin = NUM_BANK0_GPIOS;
+    auto spi_hintn_outside = spi;
+    spi_hintn_outside.control.hintn_pin = NUM_BANK0_GPIOS;
     static Spi swapped_spi{spi_swapped};
     static Spi other_spi{spi_other};
     static Spi outside_spi{spi_outside};
+    static Spi hintn_outside_spi{spi_hintn_outside};
     const auto& sc = spi.control;
     const std::array spi_pins{
         spi.miso_pin, spi.mosi_pin, spi.sck_pin, spi.csn_pin,  sc.hintn_pin,
@@ -332,6 +340,8 @@ int main() {
                   spi_pins);
     check_refusal(run, state, "spi-refuses-a-pin-outside-bank-0", outside_spi,
                   spi_outside_pins);
+    check_refusal(run, state, "spi-refuses-a-hintn-pin-outside-bank-0",
+                  hintn_outside_spi, spi_pins);
     const bool i2c_default_ready =
         default_boot(state, state.i2c, state.i2c_imu);
     run.check("HR-4", "i2c-accepts-the-default-pins", i2c_default_ready,

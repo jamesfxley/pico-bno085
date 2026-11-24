@@ -10,6 +10,7 @@
 #include <array>
 #include <charconv>
 #include <cmath>
+#include <concepts>
 #include <cstddef>
 #include <cstdint>
 #include <optional>
@@ -371,5 +372,284 @@ inline std::optional<Bno085::CalibrationOptions> parse_calibration(
     }
     return options;
 }
+
+/// The payload mode a power-up starts in (LP-5).
+inline constexpr bool PAYLOAD_DEFAULT = false;
+
+/// The first word of a command line (LP-2).
+enum class Word : std::uint8_t {
+    UNKNOWN,
+    BUS,
+    INFO,
+    PAYLOAD,
+    CFG,
+    OFF,
+    FLUSH,
+    RUN,
+    STAT,
+    HEAP,
+    RESET,
+    CLEARDCD,
+    TRACE,
+    BOOT,
+    TARE,
+    TAREPERSIST,
+    CAL,
+    CALGET,
+    SAVEDCD,
+    PDCD,
+};
+
+/// A command line split into its word and the text after it.
+struct Command {
+    Word word = Word::UNKNOWN;
+    std::string_view args;
+};
+
+namespace detail {
+
+struct WordEntry {
+    std::string_view name;
+    Word word;
+    bool takes_args;
+};
+
+inline constexpr std::array<WordEntry, 19> WORDS{{
+    {.name = "bus", .word = Word::BUS, .takes_args = true},
+    {.name = "info", .word = Word::INFO, .takes_args = false},
+    {.name = "payload", .word = Word::PAYLOAD, .takes_args = true},
+    {.name = "cfg", .word = Word::CFG, .takes_args = true},
+    {.name = "off", .word = Word::OFF, .takes_args = true},
+    {.name = "flush", .word = Word::FLUSH, .takes_args = true},
+    {.name = "run", .word = Word::RUN, .takes_args = true},
+    {.name = "stat", .word = Word::STAT, .takes_args = false},
+    {.name = "heap", .word = Word::HEAP, .takes_args = false},
+    {.name = "reset", .word = Word::RESET, .takes_args = false},
+    {.name = "cleardcd", .word = Word::CLEARDCD, .takes_args = false},
+    {.name = "trace", .word = Word::TRACE, .takes_args = true},
+    {.name = "boot", .word = Word::BOOT, .takes_args = false},
+    {.name = "tare", .word = Word::TARE, .takes_args = true},
+    {.name = "tarepersist", .word = Word::TAREPERSIST, .takes_args = false},
+    {.name = "cal", .word = Word::CAL, .takes_args = true},
+    {.name = "calget", .word = Word::CALGET, .takes_args = false},
+    {.name = "savedcd", .word = Word::SAVEDCD, .takes_args = false},
+    {.name = "pdcd", .word = Word::PDCD, .takes_args = true},
+}};
+
+}  // namespace detail
+
+/// Split a line at its first space (LP-2). A word that takes arguments is
+/// recognised without them, so that its parser can refuse the line with
+/// `# err parse`. A word that takes none is recognised only alone, and a line
+/// that gives it text, even a space, is UNKNOWN.
+inline Command split_command(std::string_view line) {
+    const std::size_t space = line.find(' ');
+    const std::string_view name = line.substr(0, space);
+    const std::string_view args = space == std::string_view::npos
+                                      ? std::string_view()
+                                      : line.substr(space + 1);
+    for (const detail::WordEntry& entry : detail::WORDS) {
+        if (entry.name != name) {
+            continue;
+        }
+        if (!entry.takes_args && space != std::string_view::npos) {
+            break;
+        }
+        return Command{.word = entry.word, .args = args};
+    }
+    return Command{};
+}
+
+/// The calibration and tare commands, each one driver call (LP-2).
+enum class RequestKind : std::uint8_t {
+    TARE,
+    TARE_PERSIST,
+    CALIBRATE,
+    CALIBRATION_GET,
+    SAVE_DCD,
+    PERIODIC_DCD,
+};
+
+/// A parsed calibration or tare command with its arguments.
+struct CalibrationRequest {
+    RequestKind kind = RequestKind::TARE;
+    Bno085::TareOptions tare;
+    Bno085::CalibrationOptions calibration;
+    bool enable = false;
+};
+
+/// Result of reading a command as a calibration or tare request.
+struct RequestParse {
+    enum class Status : std::uint8_t { NOT_A_REQUEST, MALFORMED, OK };
+    Status status = Status::NOT_A_REQUEST;
+    CalibrationRequest request;
+};
+
+/// Read `command` as a calibration or tare request (LP-2).
+inline RequestParse parse_calibration_request(const Command& command) {
+    using Status = RequestParse::Status;
+    RequestParse parsed;
+    switch (command.word) {
+        case Word::TARE:
+            parsed.request.kind = RequestKind::TARE;
+            if (const auto tare = parse_tare(command.args)) {
+                parsed.request.tare = *tare;
+                parsed.status = Status::OK;
+            } else {
+                parsed.status = Status::MALFORMED;
+            }
+            break;
+        case Word::CAL:
+            parsed.request.kind = RequestKind::CALIBRATE;
+            if (const auto calibration = parse_calibration(command.args)) {
+                parsed.request.calibration = *calibration;
+                parsed.status = Status::OK;
+            } else {
+                parsed.status = Status::MALFORMED;
+            }
+            break;
+        case Word::PDCD:
+            parsed.request.kind = RequestKind::PERIODIC_DCD;
+            if (const auto enable = parse_flag(command.args)) {
+                parsed.request.enable = *enable;
+                parsed.status = Status::OK;
+            } else {
+                parsed.status = Status::MALFORMED;
+            }
+            break;
+        case Word::TAREPERSIST:
+            parsed.request.kind = RequestKind::TARE_PERSIST;
+            parsed.status = Status::OK;
+            break;
+        case Word::CALGET:
+            parsed.request.kind = RequestKind::CALIBRATION_GET;
+            parsed.status = Status::OK;
+            break;
+        case Word::SAVEDCD:
+            parsed.request.kind = RequestKind::SAVE_DCD;
+            parsed.status = Status::OK;
+            break;
+        case Word::UNKNOWN:
+        case Word::BUS:
+        case Word::INFO:
+        case Word::PAYLOAD:
+        case Word::CFG:
+        case Word::OFF:
+        case Word::FLUSH:
+        case Word::RUN:
+        case Word::STAT:
+        case Word::HEAP:
+        case Word::RESET:
+        case Word::CLEARDCD:
+        case Word::TRACE:
+        case Word::BOOT:
+            break;
+    }
+    return parsed;
+}
+
+/// Parameters of the ME calibration command that reads the routines' state:
+/// subcommand 1 in P3 (1000-3625 §6.4.6.2).
+inline constexpr std::array<std::uint8_t, 4> GET_ME_CALIBRATION{0, 0, 0, 1};
+
+/// The calls of the driver that a calibration request makes.
+template <typename Imu>
+concept RequestTarget = requires(Imu& imu, const Bno085::TareOptions& tare,
+                                 const Bno085::CalibrationOptions& calibration,
+                                 std::span<const std::uint8_t> params) {
+    { imu.tare_now(tare) } -> std::same_as<Result<void>>;
+    { imu.persist_tare() } -> std::same_as<Result<void>>;
+    {
+        imu.configure_dynamic_calibration(calibration)
+    } -> std::same_as<Result<void>>;
+    { imu.send_command(std::uint8_t{}, params) } -> std::same_as<Result<void>>;
+    { imu.save_dcd() } -> std::same_as<Result<void>>;
+    { imu.set_periodic_dcd(bool{}) } -> std::same_as<Result<void>>;
+};
+
+/// Make the driver call for a request, with the parameters it carries.
+template <RequestTarget Imu>
+Result<void> send_request(Imu& imu, const CalibrationRequest& request) {
+    switch (request.kind) {
+        case RequestKind::TARE:
+            return imu.tare_now(request.tare);
+        case RequestKind::TARE_PERSIST:
+            return imu.persist_tare();
+        case RequestKind::CALIBRATE:
+            return imu.configure_dynamic_calibration(request.calibration);
+        case RequestKind::CALIBRATION_GET:
+            return imu.send_command(pico_sh2::command::ME_CALIBRATION,
+                                    GET_ME_CALIBRATION);
+        case RequestKind::SAVE_DCD:
+            return imu.save_dcd();
+        case RequestKind::PERIODIC_DCD:
+            return imu.set_periodic_dcd(request.enable);
+    }
+    return Error::INVALID_ARGUMENT;
+}
+
+/// The SH-2 command whose response a request makes the bench print, or zero
+/// for a request the hub does not answer (LP-7).
+constexpr std::uint8_t response_command(RequestKind kind) {
+    switch (kind) {
+        case RequestKind::TARE:
+        case RequestKind::TARE_PERSIST:
+            return pico_sh2::command::TARE;
+        case RequestKind::CALIBRATE:
+        case RequestKind::CALIBRATION_GET:
+            return pico_sh2::command::ME_CALIBRATION;
+        case RequestKind::SAVE_DCD:
+            return pico_sh2::command::SAVE_DCD;
+        case RequestKind::PERIODIC_DCD:
+            return 0;
+    }
+    return 0;
+}
+
+/// The command whose response the host is waiting for (LP-7). Other responses
+/// stay unprinted, so output without a bench command in flight is unchanged.
+class AwaitedResponse {
+   public:
+    /// Wait for the response to `command`; zero waits for none.
+    void expect(std::uint8_t command) { command_ = command; }
+
+    /// Stop waiting: the hub restarted, or the command did not go out.
+    void clear() { command_ = 0; }
+
+    /// A command refused with `error` is not in flight, so its wait is
+    /// dropped; a refusal for `BUSY` leaves the command already in flight.
+    void refused(Error error) {
+        if (error != Error::BUSY) {
+            clear();
+        }
+    }
+
+    /// Give the session's command-timeout count. A change since the last call
+    /// means the command in flight timed out, so no response will come.
+    void note_timeouts(std::uint32_t total) {
+        if (total != timeouts_) {
+            timeouts_ = total;
+            clear();
+        }
+    }
+
+    /// True once, for the response being waited for. The session clears the
+    /// unsolicited flag before it delivers a response (pico-sh2
+    /// `CommandResponse`), so the bench cannot test it; the unsolicited
+    /// responses that are known are Initialize, which is never awaited.
+    [[nodiscard]] bool take(const pico_sh2::CommandResponse& response) {
+        if (command_ == 0 || response.command != command_) {
+            return false;
+        }
+        command_ = 0;
+        return true;
+    }
+
+    [[nodiscard]] std::uint8_t pending() const { return command_; }
+
+   private:
+    std::uint8_t command_ = 0;
+    std::uint32_t timeouts_ = 0;
+};
 
 }  // namespace pico_bno085::bench

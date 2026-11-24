@@ -14,8 +14,10 @@ SPEC.loader.exec_module(bench)
 
 
 class RecordingDevice:
-    def __init__(self, reply):
-        self.reply = reply
+    """Answers with the lines it was given, as the real wait_for reads them."""
+
+    def __init__(self, lines):
+        self.lines = list(lines)
         self.log = []
         self.bus = None
         self.wire = None
@@ -24,21 +26,30 @@ class RecordingDevice:
         self.log.append(line)
 
     def wait_for(self, prefix, _timeout):
-        return prefix if self.reply else None
+        while self.lines:
+            line = self.lines.pop(0)
+            if line.startswith(prefix):
+                return line
+        return None
 
 
 def test_payload_is_switched_off_and_acknowledged():
-    dev = RecordingDevice(reply=True)
+    dev = RecordingDevice(["# payload 0"])
     assert bench.disable_payload(dev) is True
     assert dev.log == ["payload 0"]
 
 
 def test_a_silent_firmware_is_reported():
-    assert bench.disable_payload(RecordingDevice(reply=False)) is False
+    assert bench.disable_payload(RecordingDevice([])) is False
+
+
+def test_a_reply_that_is_not_the_acknowledgement_is_reported():
+    assert bench.disable_payload(RecordingDevice(["# payload 1"])) is False
+    assert bench.disable_payload(RecordingDevice(["# err parse"])) is False
 
 
 def test_a_session_disables_payload_before_it_selects_the_bus(monkeypatch):
-    dev = RecordingDevice(reply=True)
+    dev = RecordingDevice(["# payload 0"])
     order = []
     monkeypatch.setattr(bench, "Device", lambda *_args: dev)
     monkeypatch.setattr(

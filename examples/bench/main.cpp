@@ -93,7 +93,7 @@ const char* g_bus_name = "none";
 struct Run {
     bool streaming = false;
     // Payload lines replace E lines for kinds that have one (LP-5).
-    bool payload = false;
+    bool payload = pico_bno085::bench::PAYLOAD_DEFAULT;
     std::uint32_t events = 0;
 };
 
@@ -121,17 +121,14 @@ void on_event(void* ctx, const SensorEvent& event) {
     }
 }
 
-// The command whose response the host is waiting for, or zero. Other
-// responses, such as the Initialize response of each boot, stay unprinted so
-// that output without a bench command is unchanged (LP-7).
-std::uint8_t g_awaited_command = 0;
+// The response the host is waiting for (LP-7).
+pico_bno085::bench::AwaitedResponse g_awaited;
 
 void on_command_response(void* /*ctx*/,
                          const pico_sh2::CommandResponse& response) {
-    if (g_awaited_command == 0 || response.command != g_awaited_command) {
+    if (!g_awaited.take(response)) {
         return;
     }
-    g_awaited_command = 0;
     std::array<char, LINE_BUFFER_SIZE> line{};
     if (pico_bno085::bench::format_command_response(line, response) > 0) {
         printf("%s", line.data());
@@ -186,12 +183,6 @@ void print_stats(const pico_bno085::Bno085& imu) {
         static_cast<unsigned long>(counters.level_fallback_reads),
         static_cast<unsigned long>(counters.absent_reads),
         static_cast<unsigned long>(counters.service_latency_max_us));
-}
-
-// Derive the argument offset from the matched prefix so renaming stays safe.
-constexpr std::string_view arguments(std::string_view line,
-                                     std::string_view prefix) {
-    return line.substr(prefix.size());
 }
 
 // Read a command without blocking service(). Return an empty view until
@@ -260,98 +251,97 @@ void print_info() {
 
 void report(bool ok, const char* done) { printf("# %s\n", ok ? done : "err"); }
 
-// cfg/off/flush: a sensor id, and for cfg an interval.
-bool handle_sensor_command(pico_bno085::Bno085& imu, std::string_view line) {
-    if (line.starts_with("cfg ")) {
-        std::string_view args = arguments(line, "cfg ");
-        unsigned id = 0;
-        unsigned interval = 0;
-        if (!take_uint(args, id, BASE_HEX) ||
-            !take_uint(args, interval, BASE_DEC)) {
-            printf("# err parse\n");
-            return true;
-        }
-        report(imu.enable_sensor(static_cast<SensorId>(id),
-                                 {.report_interval_us = interval})
-                   .ok(),
-               "ok");
-        return true;
+// cfg: a sensor id and an interval.
+void handle_cfg(pico_bno085::Bno085& imu, std::string_view args) {
+    unsigned id = 0;
+    unsigned interval = 0;
+    if (!take_uint(args, id, BASE_HEX) ||
+        !take_uint(args, interval, BASE_DEC)) {
+        printf("# err parse\n");
+        return;
     }
-    // Disable removes desired sensors that would otherwise survive reset
-    // (AR-3).
-    if (line.starts_with("off ") || line.starts_with("flush ")) {
-        const bool is_off = line.starts_with("off ");
-        std::string_view args =
-            is_off ? arguments(line, "off ") : arguments(line, "flush ");
-        unsigned id = 0;
-        if (!take_uint(args, id, BASE_HEX)) {
-            printf("# err parse\n");
-            return true;
-        }
-        const auto sensor = static_cast<SensorId>(id);
-        report(
-            is_off ? imu.disable_sensor(sensor).ok() : imu.flush(sensor).ok(),
-            "ok");
-        return true;
-    }
-    return false;
+    report(imu.enable_sensor(static_cast<SensorId>(id),
+                             {.report_interval_us = interval})
+               .ok(),
+           "ok");
 }
 
-// run/trace: a single decimal argument.
-bool handle_timed_command(std::string_view line,
-                          std::uint64_t& run_deadline_us) {
-    if (line.starts_with("run ")) {
-        std::string_view args = arguments(line, "run ");
-        unsigned ms = 0;
-        if (!take_uint(args, ms, BASE_DEC)) {
-            printf("# err parse\n");
-            return true;
-        }
-        g_run.events = 0;
-        g_run.streaming = true;
-        clear_service_latency_peak();
-        run_deadline_us =
-            time_us_64() + static_cast<std::uint64_t>(ms) * US_PER_MS;
-        printf("# run %u\n", ms);
-        return true;
+// off/flush: a sensor id. Disable removes desired sensors that would
+// otherwise survive reset (AR-3).
+void handle_off_or_flush(pico_bno085::Bno085& imu, bool is_off,
+                         std::string_view args) {
+    unsigned id = 0;
+    if (!take_uint(args, id, BASE_HEX)) {
+        printf("# err parse\n");
+        return;
     }
-    if (line.starts_with("trace ")) {
-        std::string_view args = arguments(line, "trace ");
-        unsigned on = 0;
-        if (!take_uint(args, on, BASE_DEC)) {
-            printf("# err parse\n");
-            return true;
-        }
-        g_trace_mode = on;
-        g_tracer->set_tracing(on != 0);
-        printf("# trace %u\n", on);
-        return true;
-    }
-    return false;
+    const auto sensor = static_cast<SensorId>(id);
+    report(is_off ? imu.disable_sensor(sensor).ok() : imu.flush(sensor).ok(),
+           "ok");
 }
 
-// stat/heap/reset/cleardcd/boot: no arguments.
-bool handle_bare_command(pico_bno085::Bno085& imu, std::string_view line) {
-    if (line == "stat") {
-        print_stats(imu);
-    } else if (line == "heap") {
-        // Heap growth must not occur after startup (AR-1).
-        printf("# heap armed=%d growth=%lu\n", g_heap.armed() ? 1 : 0,
-               static_cast<unsigned long>(g_heap.growth_bytes()));
-    } else if (line == "reset") {
+// run: a duration in milliseconds.
+void handle_run(std::string_view args, std::uint64_t& run_deadline_us) {
+    unsigned ms = 0;
+    if (!take_uint(args, ms, BASE_DEC)) {
+        printf("# err parse\n");
+        return;
+    }
+    g_run.events = 0;
+    g_run.streaming = true;
+    clear_service_latency_peak();
+    run_deadline_us = time_us_64() + static_cast<std::uint64_t>(ms) * US_PER_MS;
+    printf("# run %u\n", ms);
+}
+
+// trace: a mode.
+void handle_trace(std::string_view args) {
+    unsigned on = 0;
+    if (!take_uint(args, on, BASE_DEC)) {
+        printf("# err parse\n");
+        return;
+    }
+    g_trace_mode = on;
+    g_tracer->set_tracing(on != 0);
+    printf("# trace %u\n", on);
+}
+
+// payload: 0 or 1. It needs no bus (LP-2).
+void handle_payload(std::string_view args) {
+    const auto payload = pico_bno085::bench::parse_flag(args);
+    if (!payload) {
+        printf("# err parse\n");
+        return;
+    }
+    g_run.payload = *payload;
+    printf("# payload %u\n", *payload ? 1U : 0U);
+}
+
+// stat/heap: report only.
+void handle_stat(pico_bno085::Bno085& imu) { print_stats(imu); }
+
+void handle_heap() {
+    // Heap growth must not occur after startup (AR-1).
+    printf("# heap armed=%d growth=%lu\n", g_heap.armed() ? 1 : 0,
+           static_cast<unsigned long>(g_heap.growth_bytes()));
+}
+
+// reset/cleardcd/boot restart the hub, so a command in flight gets no
+// response (LP-7).
+void handle_restart(pico_bno085::Bno085& imu, pico_bno085::bench::Word word) {
+    using pico_bno085::bench::Word;
+    g_awaited.clear();
+    if (word == Word::RESET) {
         // Calibration survival across executable-channel reset is UNCONFIRMED
         // (FW-2).
         report(imu.reset().ok(), "reset");
-    } else if (line == "cleardcd") {
+    } else if (word == Word::CLEARDCD) {
         report(imu.clear_dcd_and_reset().ok(), "cleardcd");
-    } else if (line == "boot") {
+    } else {
         // begin() can retry startup from FAULTED without reflashing.
         imu.begin();
         printf("# boot\n");
-    } else {
-        return false;
     }
-    return true;
 }
 
 // Reply with the driver's refusal named (LP-3).
@@ -360,93 +350,48 @@ void print_refusal(pico_bno085::Error error) {
     printf("# err %.*s\n", static_cast<int>(name.size()), name.data());
 }
 
-// Reply to a command that the hub answers later (LP-3, LP-7). An accepted
-// command makes its response the next one printed.
-void report_awaited(const pico_bno085::Result<void>& result,
-                    std::uint8_t command) {
-    if (result.ok()) {
-        g_awaited_command = command;
-        printf("# ok\n");
-    } else {
-        print_refusal(result.error());
-    }
-}
-
-// tare/tarepersist/cal/calget/savedcd/pdcd (LP-2).
+// tare/tarepersist/cal/calget/savedcd/pdcd (LP-2, LP-3, LP-7). Returns false
+// for a command that is none of them.
 bool handle_calibration_command(pico_bno085::Bno085& imu,
-                                std::string_view line) {
-    using pico_bno085::bench::parse_calibration;
-    using pico_bno085::bench::parse_flag;
-    using pico_bno085::bench::parse_tare;
-    if (line.starts_with("tare ")) {
-        const auto options = parse_tare(arguments(line, "tare "));
-        if (!options) {
-            printf("# err parse\n");
-        } else {
-            report_awaited(imu.tare_now(*options), pico_sh2::command::TARE);
-        }
+                                const pico_bno085::bench::Command& command) {
+    using pico_bno085::bench::RequestParse;
+    const RequestParse parsed =
+        pico_bno085::bench::parse_calibration_request(command);
+    if (parsed.status == RequestParse::Status::NOT_A_REQUEST) {
+        return false;
+    }
+    if (parsed.status == RequestParse::Status::MALFORMED) {
+        printf("# err parse\n");
         return true;
     }
-    if (line == "tarepersist") {
-        report_awaited(imu.persist_tare(), pico_sh2::command::TARE);
+    const auto sent = pico_bno085::bench::send_request(imu, parsed.request);
+    if (!sent.ok()) {
+        g_awaited.refused(sent.error());
+        print_refusal(sent.error());
         return true;
     }
-    if (line.starts_with("cal ")) {
-        const auto options = parse_calibration(arguments(line, "cal "));
-        if (!options) {
-            printf("# err parse\n");
-        } else {
-            report_awaited(imu.configure_dynamic_calibration(*options),
-                           pico_sh2::command::ME_CALIBRATION);
-        }
-        return true;
-    }
-    if (line == "calget") {
-        // Subcommand 1 reads the enable state (1000-3625 §6.4.6.2).
-        constexpr std::array<std::uint8_t, 4> GET_ME_CALIBRATION{0, 0, 0, 1};
-        report_awaited(imu.send_command(pico_sh2::command::ME_CALIBRATION,
-                                        GET_ME_CALIBRATION),
-                       pico_sh2::command::ME_CALIBRATION);
-        return true;
-    }
-    if (line == "savedcd") {
-        report_awaited(imu.save_dcd(), pico_sh2::command::SAVE_DCD);
-        return true;
-    }
-    if (line.starts_with("pdcd ")) {
-        const auto enable = parse_flag(arguments(line, "pdcd "));
-        if (!enable) {
-            printf("# err parse\n");
-        } else if (const auto sent = imu.set_periodic_dcd(*enable); sent.ok()) {
-            // The hub sends no response (1000-3625 §6.4.7).
-            printf("# ok\n");
-        } else {
-            print_refusal(sent.error());
-        }
-        return true;
-    }
-    return false;
+    // An accepted command makes its response the next one printed. The hub
+    // sends none to pdcd (1000-3625 §6.4.7), which waits for none.
+    g_awaited.expect(pico_bno085::bench::response_command(parsed.request.kind));
+    printf("# ok\n");
+    return true;
 }
 
 void handle_command(pico_bno085::Bno085& imu, std::string_view line,
                     std::uint64_t& run_deadline_us) {
-    if (line.starts_with("bus ")) {
-        select_bus(imu, arguments(line, "bus "));
+    using pico_bno085::bench::Word;
+    const pico_bno085::bench::Command command =
+        pico_bno085::bench::split_command(line);
+    if (command.word == Word::BUS) {
+        select_bus(imu, command.args);
         return;
     }
-    if (line == "info") {
+    if (command.word == Word::INFO) {
         print_info();
         return;
     }
-    if (line.starts_with("payload ")) {
-        const auto payload =
-            pico_bno085::bench::parse_flag(arguments(line, "payload "));
-        if (!payload) {
-            printf("# err parse\n");
-            return;
-        }
-        g_run.payload = *payload;
-        printf("# payload %u\n", *payload ? 1U : 0U);
+    if (command.word == Word::PAYLOAD) {
+        handle_payload(command.args);
         return;
     }
 
@@ -456,10 +401,44 @@ void handle_command(pico_bno085::Bno085& imu, std::string_view line,
         return;
     }
 
-    if (handle_sensor_command(imu, line) ||
-        handle_timed_command(line, run_deadline_us) ||
-        handle_bare_command(imu, line) ||
-        handle_calibration_command(imu, line)) {
+    switch (command.word) {
+        case Word::CFG:
+            handle_cfg(imu, command.args);
+            return;
+        case Word::OFF:
+        case Word::FLUSH:
+            handle_off_or_flush(imu, command.word == Word::OFF, command.args);
+            return;
+        case Word::RUN:
+            handle_run(command.args, run_deadline_us);
+            return;
+        case Word::TRACE:
+            handle_trace(command.args);
+            return;
+        case Word::STAT:
+            handle_stat(imu);
+            return;
+        case Word::HEAP:
+            handle_heap();
+            return;
+        case Word::RESET:
+        case Word::CLEARDCD:
+        case Word::BOOT:
+            handle_restart(imu, command.word);
+            return;
+        case Word::UNKNOWN:
+        case Word::BUS:
+        case Word::INFO:
+        case Word::PAYLOAD:
+        case Word::TARE:
+        case Word::TAREPERSIST:
+        case Word::CAL:
+        case Word::CALGET:
+        case Word::SAVEDCD:
+        case Word::PDCD:
+            break;
+    }
+    if (handle_calibration_command(imu, command)) {
         return;
     }
     // Silence would cost the harness a read timeout per typo.
@@ -494,6 +473,9 @@ int main() {
     while (true) {
         if (g_selected != nullptr) {
             imu.service();
+            // A command the hub never answers times out in the session, which
+            // ends the wait for its response (LP-7).
+            g_awaited.note_timeouts(imu.counters().command_timeouts);
 
             // Announce transitions to READY for startup and recovery timing.
             const bool ready = imu.ready();

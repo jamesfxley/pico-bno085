@@ -3,8 +3,8 @@
 This specification is normative.
 
 This specification defines the architecture, hardware, performance,
-boundary, timing, observability and bench line protocol requirements for the pico-bno085
-BNO085 driver on the Raspberry Pi Pico 2 (RP2350). Every requirement has an ID
+boundary, timing, observability and bench line protocol requirements for the
+pico-bno085 BNO085 driver on the Raspberry Pi Pico 2 (RP2350). Every requirement has an ID
 (`AR`/`HR`/`PR`/`BR`/`TR`/`OR`/`LP`) and is mapped to an acceptance test in the
 traceability matrix. The platform-independent SH-2/SHTP protocol layer is
 specified separately in [pico-sh2](https://github.com/jamesfxley/pico-sh2); this
@@ -361,16 +361,20 @@ bytes the firmware prints. The SH-2 manual is 1000-3625 and the datasheet
 1000-3927.
 
 - **LP-1 — Framing.** Every line is ASCII and ends in a line feed. A command
-  ends at a line feed or a carriage return; an empty line is ignored. A
-  command is at most 64 characters, and the firmware drops those beyond that.
+  ends at a line feed or a carriage return; an empty line is ignored. The
+  firmware keeps the first 64 characters of a line, runs them as the command
+  and drops the rest of the line.
   A reply begins `# ` and carries space-separated words or `key=value` pairs.
   A telemetry line begins with one tag letter and a comma, and its fields are
   comma-separated with no spaces. A telemetry line or command response is at
   most 127 characters.
 - **LP-2 — Commands.** A command is a word and its arguments, separated by
   spaces. Every command except `bus`, `info` and `payload` needs a bus
-  selected, and is otherwise answered `# err no bus selected`. A command line that parses to none of the forms below is answered
-  `# err unknown command`, and one whose arguments do not parse `# err parse`.
+  selected, and is otherwise answered `# err no bus selected`. Whether a line is a command is decided by its first word, which ends at the
+  first space. A line whose first word is none of those below, or is one that
+  takes no arguments and is followed by any text, even a space, is answered
+  `# err unknown command`. A word that takes arguments, given none or arguments
+  that do not parse, is answered `# err parse`. The bus check comes before both.
 
   | Command | Arguments | Does |
   |---|---|---|
@@ -398,7 +402,9 @@ bytes the firmware prints. The SH-2 manual is 1000-3625 and the datasheet
   the driver writes zero to both parameters (1000-3625 §6.4.6.1). `cfg` and
   `off` take the sensor as the SH-2 report ID in hexadecimal. `tare`,
   `tarepersist`, `cal`, `calget`, `savedcd` and `pdcd` need the session READY,
-  and the driver refuses them `not_ready` otherwise.
+  and the driver refuses them `not_ready` otherwise. `bus`, `payload`, `cfg`,
+  `off`, `flush`, `run`, `trace`, `tare`, `cal` and `pdcd` take arguments; the
+  other words take none.
 - **LP-3 — Replies.** Each command is answered by the reply below. A command
   the driver refuses (`tare`, `tarepersist`, `cal`, `calget`, `savedcd`,
   `pdcd`) is answered `# err <name>`, the name being the driver error in lower
@@ -476,21 +482,34 @@ bytes the firmware prints. The SH-2 manual is 1000-3625 and the datasheet
   Number format. Every payload number is a decimal with exactly five digits
   after the point, rounded to nearest with ties away from zero, with no
   exponent and no `+`. A negative value that rounds to zero prints without its
-  sign. A value that is not finite, or whose magnitude is a thousand million or
-  more, prints `nan`; no decoded field can reach either. The hub's finest step
+  sign. A value that is not finite, or whose magnitude is 1e9 or more, prints
+  `nan`; no decoded field can reach either. The hub's finest step
   is one part in 2^14 for a quaternion (1000-3625 §6.5.18), 6.1e-5, so five
   digits lose nothing. pico-sh2 delivers each field already converted to a
   float in these units, and the bench does not read the report bytes again, so
   a line of raw integers would need each field's Q point beside it, and the
-  reader would convert. LP-8 shows the decimals fit the link. The formatter writes the digits with integer arithmetic, so the result does
+  reader would convert. LP-8 shows the decimals fit the link. The formatter
+  writes the digits with integer arithmetic, so the result does
   not depend on a `printf` float implementation, and the host test and the
   firmware print the same bytes.
 - **LP-7 — Command responses.** A command accepted by `tare`, `tarepersist`,
-  `cal`, `calget` or `savedcd` makes the hub's next response to that command
-  print as one line. A response to any other command, including the
-  unsolicited Initialize response after each reset, prints nothing, so output
-  with no such command in flight is unchanged. `pdcd` has no response
-  (1000-3625 §6.4.7). The lines are:
+  `cal`, `calget` or `savedcd` starts a wait for the hub's response to its SH-2
+  command: Tare for `tare` and `tarepersist`, ME calibration for `cal` and
+  `calget`, Save DCD for `savedcd`. The first response to that command ends the
+  wait and prints as one line. A response to any other command, including the
+  Initialize response after each reset, prints nothing, so output with no such
+  command in flight is unchanged. `pdcd` has no response (1000-3625 §6.4.7)
+  and starts no wait.
+
+  At most one wait exists, and a newly accepted command replaces it. A wait
+  ends with nothing printed when the session's command timeout expires (the
+  `command_timeouts` count in `# stats` rises), when `reset`, `cleardcd` or
+  `boot` runs, and when a command is refused with any error but `busy`. A
+  refusal with `busy` leaves the wait of the command still in flight. The bench
+  cannot tell an unsolicited response from a solicited one, because pico-sh2
+  clears the unsolicited flag before it delivers the response; the only
+  unsolicited response known is Initialize, which no wait is for. The lines
+  are:
 
   | Response | Line |
   |---|---|
@@ -506,26 +525,36 @@ bytes the firmware prints. The SH-2 manual is 1000-3625 and the datasheet
   UNCONFIRMED (FW-2). A command the hub never answers prints no line; the
   session's command timeout then frees the command slot and adds to
   `command_timeouts` in `# stats`.
-- **LP-8 — Bandwidth.** With payload on, every sensor of the datasheet's
-  maximum-rate table enabled at its maximum rate prints at most 276340 bytes a
-  second, under half of the full-speed bulk ceiling of 1216000 bytes a second
-  (nineteen 64-byte packets in each 1 ms frame, USB 2.0 bulk transfers). The table is
-  the arithmetic: each line is the longest its form prints, with a 20-digit
-  time, sequence 255 and each field at the widest value its Q point allows,
-  newline included.
+- **LP-8 — Bandwidth.** With payload on, every sensor the bench can enable
+  that prints a payload line, enabled at its maximum rate, prints at most
+  381140 bytes a second, under half of the full-speed bulk ceiling of 1216000
+  bytes a second (nineteen 64-byte packets in each 1 ms frame, USB 2.0 bulk
+  transfers). The table is the arithmetic: each line is the longest its form prints, with a
+  20-digit time, sequence 255, the sensor ID in decimal and each field at the
+  widest value its Q point allows, newline included.
 
-  | Sensor | Line | Bytes | Maximum rate (Hz, 1000-3927 Figure 6-16) | Bytes a second |
+  | Sensor | Line | Bytes | Maximum rate (Hz) | Bytes a second |
   |---|---|---|---|---|
-  | Gyro-integrated rotation | `G` | 98 | 1000 | 98000 |
-  | Rotation vector | `Q` | 76 | 400 | 30400 |
-  | Game rotation vector | `R` | 67 | 400 | 26800 |
-  | Geomagnetic rotation vector | `Q` | 76 | 90 | 6840 |
-  | Gravity | `V` | 64 | 400 | 25600 |
-  | Linear acceleration | `V` | 64 | 400 | 25600 |
-  | Accelerometer | `V` | 64 | 500 | 32000 |
-  | Gyroscope | `V` | 61 | 400 | 24400 |
-  | Magnetometer | `V` | 67 | 100 | 6700 |
-  | Total | | | | 276340 |
+  | Gyro-integrated rotation (`2A`) | `G` | 98 | 1000 | 98000 |
+  | Rotation vector (`05`) | `Q` | 76 | 400 | 30400 |
+  | AR/VR stabilised rotation vector (`28`) | `Q` | 77 | 400 | 30800 |
+  | Game rotation vector (`08`) | `R` | 67 | 400 | 26800 |
+  | AR/VR stabilised game rotation vector (`29`) | `R` | 68 | 400 | 27200 |
+  | Geomagnetic rotation vector (`09`) | `Q` | 76 | 90 | 6840 |
+  | Gravity (`06`) | `V` | 64 | 400 | 25600 |
+  | Linear acceleration (`04`) | `V` | 64 | 400 | 25600 |
+  | Accelerometer (`01`) | `V` | 64 | 500 | 32000 |
+  | Gyroscope (`02`) | `V` | 61 | 400 | 24400 |
+  | Uncalibrated gyroscope (`07`) | `U` | 91 | 400 | 36400 |
+  | Magnetometer (`03`) | `V` | 67 | 100 | 6700 |
+  | Uncalibrated magnetometer (`0F`) | `U` | 104 | 100 | 10400 |
+  | Total | | | | 381140 |
+
+  The rates are the maxima of 1000-3927 Figure 6-16 for the nine sensors it
+  lists. The stabilised rotation vectors take the rates of their
+  non-stabilised versions (§6.9). Figure 6-16 does not list the uncalibrated
+  gyroscope and magnetometer; the table gives them the rates of the calibrated
+  sensors, which is UNCONFIRMED.
 
   The bound exceeds what can run. The datasheet says the sensors cannot all run
   at their maxima together (§6.9), and the default profile enables at most
@@ -561,11 +590,11 @@ bytes the firmware prints. The SH-2 manual is 1000-3625 and the datasheet
 | TR-1 | `bno085_test` `StartupDeadlineFaultsWithDistinctPhase`, `LaterStartupDeadlinesFaultWithTheirOwnPhase` | Each of the three startup deadlines faults with `TIMEOUT`, and `startup_phase()` names the phase |
 | OR-1 | `bno085_test`: `StatsMirrorSessionAndTrackEnabled`, `SoakStatsRemainConsistentUnderResetInjection`; bench `stat` + `b-soak` (device) | Every counter changes only for its documented event. `hub_resets` counts host-requested resets as well as spontaneous ones, because the re-advertisement that reports one carries no mark of its cause; a long run leaves the error counters at zero |
 | OR-2 | `bno085_test` `EveryDiagnosticEventIsCounted` | Repeated events of one kind each increment the count, though only the first is logged |
-| LP-1 | `pico_bno085_bench_tests`: `BenchProtocol.ABufferThatIsTooSmallYieldsNoLine`, `BenchProtocol.WorstEnabledSetFitsHalfTheFullSpeedBulkCeiling`; review of `poll_line` in `examples/bench/main.cpp` | A formatter writes no more than its buffer and returns no line if it does not fit; the widest line is 98 bytes against a 127-character limit; the command-length and terminator rules are review |
-| LP-2 | `BenchProtocol.FlagArgumentsAreZeroOrOneAlone`, `TareTakesSupportedAxesAndABasis`, `CalibrationTakesThreeFlags`; `tests/bench/test_payload.py` `test_a_session_disables_payload_before_it_selects_the_bus`; `b-boot`, `b-rate` and the other cases (device) for the older commands | Each argument parser accepts exactly the forms of LP-2 and refuses the rest; the harness sends `payload 0` before `bus`; a device run drives the older commands |
-| LP-3 | `BenchProtocol.EveryDriverErrorHasAName`; `tests/bench/test_payload.py` `test_payload_is_switched_off_and_acknowledged`; `b-boot`, `b-rate` (device) | Every driver error has a name an `# err` reply can carry; the harness waits for the `# payload 0` reply; a device run reads the other replies |
-| LP-4 | `BenchProtocol.PayloadOffPrintsTheLegacyLineForEveryKindAndHeader`; `b-rate`, `b-ts` (device) | For every sample kind, sensor, time and accuracy, the E line equals the bench's original format string byte for byte |
-| LP-5 | `BenchProtocol.PayloadOffPrintsTheLegacyLineForEveryKindAndHeader`, `PayloadOnKeepsELinesForKindsWithoutAPayloadLine`, `TheKindOfSampleSelectsTheLine`; `tests/bench/test_payload.py` | With payload off every event prints its original E line; with it on a kind without a payload line still prints its E line, and the kind, not the sensor ID, selects the tag; the harness turns payload off at session start |
+| LP-1 | `pico_bno085_bench_tests`: `BenchProtocol.ABufferThatIsTooSmallYieldsNoLine`, `WorstEnabledSetFitsHalfTheFullSpeedBulkCeiling`, `SequenceNumbersAboveOneHundredTwentySevenPrintInFull`; review of `poll_line` in `examples/bench/main.cpp` | A formatter writes no more than its buffer and returns no line if it does not fit; the widest line is 104 bytes against a 127-character limit; the command-length and terminator rules are review |
+| LP-2 | `BenchProtocol.FlagArgumentsAreZeroOrOneAlone`, `TareTakesSupportedAxesAndABasis`, `CalibrationTakesThreeFlags`, `EveryWordSelectsItsCommand`, `AWordWithoutItsArgumentsIsRecognisedForParsing`, `AMalformedRequestIsMalformedAndAnotherCommandIsNot`, `EachCommandMakesItsDriverCall`, `PeriodicDcdPassesItsFlagThrough`, `CalibrationGetSendsSubcommandOneOfMeCalibration`, `PayloadIsOffAtPowerUp`; `tests/bench/test_payload.py` `test_a_session_disables_payload_before_it_selects_the_bus`; `b-boot`, `b-rate` and the other cases (device) for the older commands | Each word selects its command, a word that takes arguments is recognised without them and a word that takes none is not, each argument parser accepts exactly the forms of LP-2 and refuses the rest, each request makes its driver call with the parameters stated, the power-up payload mode is off, and the harness sends `payload 0` before `bus`; the bus check that precedes the parse and the print of each reply are review of `handle_command`, and a device run drives the older commands |
+| LP-3 | `BenchProtocol.EveryDriverErrorHasItsLp3Name`; `tests/bench/test_payload.py` `test_payload_is_switched_off_and_acknowledged`, `test_a_reply_that_is_not_the_acknowledgement_is_reported`; `b-boot`, `b-rate` (device) | Each driver error has exactly the name LP-3 lists; the harness accepts only the `# payload 0` reply; a device run reads the other replies |
+| LP-4 | `BenchProtocol.PayloadOffPrintsTheLegacyLineForEveryKindAndHeader`; `b-rate`, `b-ts` (device) | For every sample kind, sensor, time and accuracy, `format_event` with payload off equals a reconstruction of the original `printf("E,%u,%u,%llu,%u\n", ...)`, written in the test with `std::to_string`. The test shows the formatter and the reconstruction agree; it does not run the original firmware, so that the image prints the same bytes on a board is pending (device) |
+| LP-5 | `BenchProtocol.PayloadOffPrintsTheLegacyLineForEveryKindAndHeader`, `PayloadOnKeepsELinesForKindsWithoutAPayloadLine`, `TheKindOfSampleSelectsTheLine`, `PayloadIsOffAtPowerUp`; `tests/bench/test_payload.py` | With payload off every event prints the E line of the reconstruction in LP-4; with it on a kind without a payload line still prints its E line, and the kind, not the sensor ID, selects the tag; payload is off at power-up; the harness turns payload off at session start |
 | LP-6 | `BenchProtocol.RotationVectorLineIsQuaternionThenAccuracy`, `GameRotationLineHasNoAccuracyField`, `VectorLineIsXyz`, `UncalibratedLineIsValueThenBias`, `GyroIntegratedLineIsQuaternionThenAngularVelocity`, `FixedNumbersHaveFiveDigitsAndRoundToNearest`, `ANegativeValueThatRoundsToZeroCarriesNoSign`, `ANonFiniteValueIsNan`; payload lines on hardware (device, pending) | Each line has the fields, order and number format stated; the frame and rotation-direction statements are not tested and the on-device print is a device run, not yet made |
-| LP-7 | `BenchProtocol.SaveDcdResponseReportsItsStatus`, `MeCalibrationResponseReportsEachRoutine`, `OtherResponsesPrintTheirRawResults`; review of `on_command_response` in `examples/bench/main.cpp`; command responses on hardware (device, pending) | Each response prints as the line stated; that nothing else prints is review, and the hub's responses are a device run, not yet made |
-| LP-8 | `BenchProtocol.WorstEnabledSetFitsHalfTheFullSpeedBulkCeiling` | The longest line of each of nine sensors, at the datasheet's maximum rates, totals 276340 bytes a second, at most half of 1216000; sustained USB throughput on the board is not tested |
+| LP-7 | `BenchProtocol.SaveDcdResponseReportsItsStatus`, `MeCalibrationResponseReportsEachRoutine`, `OtherResponsesPrintTheirRawResults`, `EachRequestAwaitsTheResponseOfItsCommand`, `NothingIsAwaitedAtPowerUp`, `OnlyTheAwaitedResponseIsTakenAndOnlyOnce`, `ATimeoutEndsTheWait`, `ARefusalEndsTheWaitExceptBusy`, `AClearEndsTheWait`; review of `handle_calibration_command`, `handle_restart` and the main loop in `examples/bench/main.cpp`; command responses on hardware (device, pending) | Each response prints as the line stated; each request waits for the response of its command, nothing is awaited at power-up, a response is taken once and only if awaited, and a timeout, a refusal other than `busy` and a clear end the wait; that `reset`, `cleardcd` and `boot` call the clear and that the main loop passes the session's timeout count is review, and the hub's responses are a device run, not yet made |
+| LP-8 | `BenchProtocol.WorstEnabledSetFitsHalfTheFullSpeedBulkCeiling` | The longest line of each of thirteen sensors, at the rates of LP-8, totals 381140 bytes a second, at most half of 1216000; the rates of the uncalibrated gyroscope and magnetometer are UNCONFIRMED; sustained USB throughput on the board is not tested |

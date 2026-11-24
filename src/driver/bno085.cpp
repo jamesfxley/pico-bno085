@@ -209,13 +209,13 @@ Result<void> Bno085::set_periodic_dcd(bool enable) {
     // 1000-3625 6.4.7.1, Figure 59: zero enables; one disables.
     std::array<std::uint8_t, 1> params{
         static_cast<std::uint8_t>(enable ? 0x00 : 0x01)};
-    return from_sh2(
-        session_.send_command(pico_sh2::command::PERIODIC_DCD, params));
+    return from_sh2(session_.send_command_without_response(
+        pico_sh2::command::PERIODIC_DCD, params));
 }
 
 Result<void> Bno085::clear_dcd_and_reset() {
-    return from_sh2(
-        session_.send_command(pico_sh2::command::CLEAR_DCD_AND_RESET));
+    return from_sh2(session_.send_command_without_response(
+        pico_sh2::command::CLEAR_DCD_AND_RESET));
 }
 
 Result<void> Bno085::request_oscillator_type() {

@@ -8,6 +8,7 @@
 
 #include <algorithm>
 #include <array>
+#include <bit>
 #include <charconv>
 #include <cmath>
 #include <concepts>
@@ -31,7 +32,7 @@ inline constexpr int FIXED_DIGITS = 5;
 inline constexpr std::int64_t FIXED_SCALE = 100'000;
 /// Magnitudes at or above this print as `nan`; no decoded field reaches it
 /// (LP-6).
-inline constexpr double FIXED_LIMIT = 1.0e9;
+inline constexpr float FIXED_LIMIT = 1.0e9F;
 
 /// Longest line the formatters produce, including the terminating NUL (LP-1).
 inline constexpr std::size_t LINE_BUFFER_SIZE = 128;
@@ -86,28 +87,58 @@ class LineWriter {
     }
 
     /// A decimal with FIXED_DIGITS places, rounded to nearest with ties away
-    /// from zero. A value that rounds to zero carries no sign (LP-6).
+    /// from zero. A value that rounds to zero carries no sign (LP-6). It uses
+    /// no double arithmetic: the SDK places soft-double routines in RAM, and
+    /// they do not fit the bench's static RAM budget.
     void put_fixed(float value) {
-        const auto wide = static_cast<double>(value);
-        if (!std::isfinite(wide) || std::fabs(wide) >= FIXED_LIMIT) {
+        if (!std::isfinite(value) || std::fabs(value) >= FIXED_LIMIT) {
             put("nan");
             return;
         }
-        const std::int64_t scaled =
-            std::llround(wide * static_cast<double>(FIXED_SCALE));
-        if (scaled < 0) {
+        constexpr std::uint32_t SIGN_MASK = 0x8000'0000U;
+        constexpr std::uint32_t EXPONENT_MASK = 0x0000'00FFU;
+        constexpr std::uint32_t FRACTION_MASK = 0x007F'FFFFU;
+        constexpr std::uint32_t HIDDEN_BIT = 0x0080'0000U;
+        constexpr unsigned FRACTION_BITS = 23;
+        constexpr int EXPONENT_BIAS = 127;
+        constexpr int EXPONENT_OFFSET =
+            EXPONENT_BIAS + static_cast<int>(FRACTION_BITS);
+        constexpr unsigned MAX_SHIFT = 63;
+        constexpr auto SCALE = static_cast<std::uint64_t>(FIXED_SCALE);
+        constexpr std::uint64_t TEN = 10;
+
+        const auto bits = std::bit_cast<std::uint32_t>(value);
+        const bool negative = (bits & SIGN_MASK) != 0;
+        const std::uint32_t exponent_field =
+            (bits >> FRACTION_BITS) & EXPONENT_MASK;
+        const std::uint32_t fraction = bits & FRACTION_MASK;
+        const std::uint64_t mantissa =
+            exponent_field == 0 ? fraction : fraction | HIDDEN_BIT;
+        const int exponent =
+            exponent_field == 0
+                ? 1 - EXPONENT_OFFSET
+                : static_cast<int>(exponent_field) - EXPONENT_OFFSET;
+        // The mantissa and scale need at most 41 bits, so this product is
+        // exact.
+        const std::uint64_t product = mantissa * SCALE;
+        std::uint64_t scaled = 0;
+        if (exponent >= 0) {
+            scaled = product << static_cast<unsigned>(exponent);
+        } else {
+            const auto shift = static_cast<unsigned>(-exponent);
+            if (shift <= MAX_SHIFT) {
+                scaled = (product + (std::uint64_t{1} << (shift - 1))) >> shift;
+            }
+        }
+        if (negative && scaled != 0) {
             put('-');
         }
-        const auto magnitude =
-            static_cast<std::uint64_t>(scaled < 0 ? -scaled : scaled);
-        constexpr auto SCALE = static_cast<std::uint64_t>(FIXED_SCALE);
-        put_uint(magnitude / SCALE);
+        put_uint(scaled / SCALE);
         put('.');
-        const std::uint64_t fraction = magnitude % SCALE;
-        constexpr std::uint64_t TEN = 10;
+        const std::uint64_t remainder = scaled % SCALE;
         std::uint64_t place = SCALE / TEN;
         for (int digit = 0; digit < FIXED_DIGITS; ++digit) {
-            put(static_cast<char>('0' + ((fraction / place) % TEN)));
+            put(static_cast<char>('0' + ((remainder / place) % TEN)));
             place /= TEN;
         }
     }

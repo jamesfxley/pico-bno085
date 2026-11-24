@@ -8,6 +8,8 @@
 #include <gtest/gtest.h>
 
 #include <array>
+#include <bit>
+#include <cmath>
 #include <cstdint>
 #include <cstdio>
 #include <limits>
@@ -69,6 +71,30 @@ std::string fixed(float value) {
     writer.put_fixed(value);
     const std::size_t length = writer.finish();
     return {buffer.data(), length};
+}
+
+// An independent reference for the integer formatter, built on a double
+// product.
+std::string reference_fixed(float value) {
+    const auto wide = static_cast<double>(value);
+    if (!std::isfinite(wide) || std::fabs(wide) >= 1.0e9) {
+        return "nan";
+    }
+    const std::int64_t scaled = std::llround(wide * 100000.0);
+    std::string text;
+    if (scaled < 0) {
+        text += '-';
+    }
+    constexpr std::uint64_t SCALE = 100'000;
+    constexpr std::size_t PLACES = 5;
+    const auto magnitude =
+        static_cast<std::uint64_t>(scaled < 0 ? -scaled : scaled);
+    text += std::to_string(magnitude / SCALE);
+    text += '.';
+    const std::string fraction = std::to_string(magnitude % SCALE);
+    text.append(PLACES - fraction.size(), '0');
+    text += fraction;
+    return text;
 }
 
 // What the bench printed for every event before payload mode existed:
@@ -213,6 +239,66 @@ TEST(BenchProtocol, ANonFiniteValueIsNan) {
     EXPECT_EQ(fixed(std::numeric_limits<float>::infinity()), "nan");
     EXPECT_EQ(fixed(-std::numeric_limits<float>::infinity()), "nan");
     EXPECT_EQ(fixed(2.0e9F), "nan");
+}
+
+TEST(BenchProtocol, FixedFormattingMatchesTheDoubleReferenceAtEdges) {
+    EXPECT_EQ(fixed(0.015625F), "0.01563");
+    EXPECT_EQ(fixed(-0.015625F), "-0.01563");
+    EXPECT_EQ(fixed(1.5e-5F), "0.00001");
+    EXPECT_EQ(fixed(std::nextafter(1.5e-5F, 1.0F)), "0.00002");
+    EXPECT_EQ(fixed(-0.000004F), "0.00000");
+
+    const std::array<float, 12> edges{
+        0.0F,
+        -0.0F,
+        0.015625F,
+        -0.015625F,
+        1.5e-5F,
+        std::nextafter(1.5e-5F, 1.0F),
+        -0.000004F,
+        std::bit_cast<float>(std::uint32_t{1}),
+        std::bit_cast<float>(std::uint32_t{0x007F'FFFFU}),
+        std::numeric_limits<float>::min(),
+        std::nextafter(1.0e9F, 0.0F),
+        1.0e9F,
+    };
+    for (const float value : edges) {
+        EXPECT_EQ(fixed(value), reference_fixed(value)) << value;
+    }
+    const std::array<float, 4> non_finite{
+        std::numeric_limits<float>::quiet_NaN(),
+        std::numeric_limits<float>::infinity(),
+        -std::numeric_limits<float>::infinity(),
+        std::nextafter(1.0e9F, 2.0e9F),
+    };
+    for (const float value : non_finite) {
+        EXPECT_EQ(fixed(value), "nan") << value;
+        EXPECT_EQ(reference_fixed(value), "nan") << value;
+    }
+}
+
+TEST(BenchProtocol, FixedFormattingMatchesTheDoubleReferenceForRandomBits) {
+    constexpr std::uint32_t PATTERNS = 100'000;
+    constexpr std::uint32_t MULTIPLIER = 1'664'525U;
+    constexpr std::uint32_t INCREMENT = 1'013'904'223U;
+    constexpr std::uint32_t SIGN_BIT = 0x8000'0000U;
+    constexpr std::uint32_t FRACTION_MASK = 0x007F'FFFFU;
+    constexpr unsigned EXPONENT_BITS = 23;
+    constexpr std::uint32_t EXPONENT_COUNT = 256;
+    // The low bits of a power-of-two LCG repeat quickly; folding in the high
+    // bits varies the fraction across exponents.
+    constexpr unsigned MIX_SHIFT = 16;
+    std::uint32_t state = 0x1234'5678U;
+    for (std::uint32_t index = 0; index < PATTERNS; ++index) {
+        state = state * MULTIPLIER + INCREMENT;
+        const std::uint32_t mixed = state ^ (state >> MIX_SHIFT);
+        const std::uint32_t exponent = index % EXPONENT_COUNT;
+        const std::uint32_t bits = (mixed & SIGN_BIT) |
+                                   (exponent << EXPONENT_BITS) |
+                                   (mixed & FRACTION_MASK);
+        const auto value = std::bit_cast<float>(bits);
+        EXPECT_EQ(fixed(value), reference_fixed(value)) << bits;
+    }
 }
 
 TEST(BenchProtocol, ABufferThatIsTooSmallYieldsNoLine) {

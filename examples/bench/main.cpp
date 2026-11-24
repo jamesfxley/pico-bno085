@@ -205,7 +205,20 @@ std::string_view poll_line(std::array<char, LINE_CAP>& buf, std::size_t& len) {
 }
 
 // Initialise only the selected transport to avoid pad contention.
-void select_bus(pico_bno085::Bno085& imu, std::string_view which) {
+void select_bus(pico_bno085::Bno085& imu, std::string_view args) {
+    using pico_bno085::bench::BusChoice;
+    const BusChoice choice = pico_bno085::bench::parse_bus(args);
+    if (choice == BusChoice::MISSING) {
+        printf("# err parse\n");
+        return;
+    }
+    if (choice == BusChoice::UNKNOWN) {
+        // The running transport stays selected (LP-2).
+        printf("# err bus must be i2c or spi\n");
+        return;
+    }
+    // begin() below resets the command engine without a timeout (LP-7).
+    g_awaited.clear();
     // Release the outgoing transport's interrupt and pads before re-strapping
     // with NRST asserted (HR-3).
     if (g_selected == &g_i2c) {
@@ -217,17 +230,14 @@ void select_bus(pico_bno085::Bno085& imu, std::string_view which) {
     g_bus_name = "none";
 
     pico_sh2::Result<void> started = pico_sh2::Sh2Error::INVALID_ARGUMENT;
-    if (which == "i2c") {
+    if (choice == BusChoice::I2C) {
         started = g_i2c.init();
         g_selected = &g_i2c;
         g_bus_name = "i2c";
-    } else if (which == "spi") {
+    } else {
         started = g_spi.init();
         g_selected = &g_spi;
         g_bus_name = "spi";
-    } else {
-        printf("# err bus must be i2c or spi\n");
-        return;
     }
 
     if (!started.ok()) {
@@ -330,14 +340,15 @@ void handle_heap() {
 // response (LP-7).
 void handle_restart(pico_bno085::Bno085& imu, pico_bno085::bench::Word word) {
     using pico_bno085::bench::Word;
-    g_awaited.clear();
-    if (word == Word::RESET) {
+    if (word == Word::RESET || word == Word::CLEARDCD) {
         // Calibration survival across executable-channel reset is UNCONFIRMED
         // (FW-2).
-        report(imu.reset().ok(), "reset");
-    } else if (word == Word::CLEARDCD) {
-        report(imu.clear_dcd_and_reset().ok(), "cleardcd");
+        const auto restarted =
+            word == Word::RESET ? imu.reset() : imu.clear_dcd_and_reset();
+        g_awaited.restart(restarted);
+        report(restarted.ok(), word == Word::RESET ? "reset" : "cleardcd");
     } else {
+        g_awaited.clear();
         // begin() can retry startup from FAULTED without reflashing.
         imu.begin();
         printf("# boot\n");
@@ -476,6 +487,8 @@ int main() {
             // A command the hub never answers times out in the session, which
             // ends the wait for its response (LP-7).
             g_awaited.note_timeouts(imu.counters().command_timeouts);
+            // The session's recovery restarts its command engine too.
+            g_awaited.note_hub_resets(imu.stats().hub_resets);
 
             // Announce transitions to READY for startup and recovery timing.
             const bool ready = imu.ready();

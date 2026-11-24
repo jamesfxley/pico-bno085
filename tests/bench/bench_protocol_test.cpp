@@ -590,6 +590,50 @@ TEST(BenchProtocol, ARefusalEndsTheWaitExceptBusy) {
     EXPECT_EQ(awaited.pending(), 0);
 }
 
+TEST(BenchProtocol, AHubResetEndsTheWait) {
+    pico_bno085::bench::AwaitedResponse awaited;
+    awaited.note_hub_resets(2);
+    awaited.expect(pico_sh2::command::TARE);
+    awaited.note_hub_resets(2);
+    EXPECT_EQ(awaited.pending(), pico_sh2::command::TARE);
+    awaited.note_hub_resets(3);
+    EXPECT_EQ(awaited.pending(), 0);
+}
+
+TEST(BenchProtocol, AnAcceptedRestartEndsTheWaitAndARefusedOneFollowsTheRule) {
+    using pico_bno085::Error;
+    pico_bno085::bench::AwaitedResponse awaited;
+    awaited.expect(pico_sh2::command::TARE);
+    awaited.restart(pico_bno085::Result<void>(Error::BUSY));
+    EXPECT_EQ(awaited.pending(), pico_sh2::command::TARE);
+    awaited.restart(pico_bno085::Result<void>());
+    EXPECT_EQ(awaited.pending(), 0);
+    awaited.expect(pico_sh2::command::TARE);
+    awaited.restart(pico_bno085::Result<void>(Error::NOT_READY));
+    EXPECT_EQ(awaited.pending(), 0);
+}
+
+TEST(BenchProtocol, ACommandWithNoResponseEndsAnEarlierWait) {
+    pico_bno085::bench::AwaitedResponse awaited;
+    awaited.expect(pico_sh2::command::TARE);
+    awaited.expect(
+        pico_bno085::bench::response_command(RequestKind::PERIODIC_DCD));
+    EXPECT_EQ(awaited.pending(), 0);
+    EXPECT_FALSE(awaited.take(response_to(pico_sh2::command::TARE)));
+}
+
+TEST(BenchProtocol, ABusArgumentIsMissingUnknownOrOneOfTwo) {
+    using pico_bno085::bench::BusChoice;
+    using pico_bno085::bench::parse_bus;
+    EXPECT_EQ(parse_bus(""), BusChoice::MISSING);
+    EXPECT_EQ(parse_bus("  "), BusChoice::MISSING);
+    EXPECT_EQ(parse_bus("i2c"), BusChoice::I2C);
+    EXPECT_EQ(parse_bus("spi"), BusChoice::SPI);
+    for (const std::string_view other : {"x", "I2C", "i2c x", " spi", "uart"}) {
+        EXPECT_EQ(parse_bus(other), BusChoice::UNKNOWN) << other;
+    }
+}
+
 TEST(BenchProtocol, AClearEndsTheWait) {
     pico_bno085::bench::AwaitedResponse awaited;
     awaited.expect(pico_sh2::command::ME_CALIBRATION);

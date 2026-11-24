@@ -344,6 +344,31 @@ inline std::optional<bool> parse_flag(std::string_view args) {
     return value;
 }
 
+/// What a `bus` argument asks for (LP-2, LP-3).
+enum class BusChoice : std::uint8_t {
+    /// No argument: the line is answered `# err parse`.
+    MISSING,
+    /// An argument that names neither bus.
+    UNKNOWN,
+    I2C,
+    SPI,
+};
+
+/// Parse the argument of `bus`. Only `MISSING` and `UNKNOWN` leave the running
+/// transport alone, so a mistyped line does not end a session.
+inline BusChoice parse_bus(std::string_view args) {
+    if (only_spaces(args)) {
+        return BusChoice::MISSING;
+    }
+    if (args == "i2c") {
+        return BusChoice::I2C;
+    }
+    if (args == "spi") {
+        return BusChoice::SPI;
+    }
+    return BusChoice::UNKNOWN;
+}
+
 /// Parse `<axes_hex> <basis>` for tare: axes 7 or 4 and a basis from 0 to 5,
 /// the values the driver supports (LP-2).
 inline std::optional<Bno085::TareOptions> parse_tare(std::string_view args) {
@@ -613,7 +638,8 @@ class AwaitedResponse {
     /// Wait for the response to `command`; zero waits for none.
     void expect(std::uint8_t command) { command_ = command; }
 
-    /// Stop waiting: the hub restarted, or the command did not go out.
+    /// Stop waiting: the hub restarted, a bus was selected, or the command did
+    /// not go out.
     void clear() { command_ = 0; }
 
     /// A command refused with `error` is not in flight, so its wait is
@@ -624,11 +650,31 @@ class AwaitedResponse {
         }
     }
 
+    /// A restart of the hub (`reset`, `cleardcd`) was asked for. An accepted
+    /// restart drops the response of the command in flight; a refused one
+    /// leaves the wait as `refused` does.
+    void restart(const Result<void>& result) {
+        if (result.ok()) {
+            clear();
+        } else {
+            refused(result.error());
+        }
+    }
+
     /// Give the session's command-timeout count. A change since the last call
     /// means the command in flight timed out, so no response will come.
     void note_timeouts(std::uint32_t total) {
         if (total != timeouts_) {
             timeouts_ = total;
+            clear();
+        }
+    }
+
+    /// Give the driver's hub-reset count. A change since the last call means
+    /// the session restarted its command engine, so no response will come.
+    void note_hub_resets(std::uint32_t total) {
+        if (total != hub_resets_) {
+            hub_resets_ = total;
             clear();
         }
     }
@@ -650,6 +696,7 @@ class AwaitedResponse {
    private:
     std::uint8_t command_ = 0;
     std::uint32_t timeouts_ = 0;
+    std::uint32_t hub_resets_ = 0;
 };
 
 }  // namespace pico_bno085::bench

@@ -1268,6 +1268,7 @@ version = "0.0.0"
 source = { editable = "." }
 dependencies = [
     { name = "nicegui" },
+    { name = "pico-tooling" },
 ]
 
 [package.dev-dependencies]
@@ -1277,13 +1278,21 @@ dev = [
 ]
 
 [package.metadata]
-requires-dist = [{ name = "nicegui", specifier = "==3.18.0" }]
+requires-dist = [
+    { name = "nicegui", specifier = "==3.18.0" },
+    { name = "pico-tooling", git = "https://github.com/jamesfxley/pico-tooling?rev=v0.2.3" },
+]
 
 [package.metadata.requires-dev]
 dev = [
     { name = "mypy", specifier = "==2.4.1" },
     { name = "pytest", specifier = "==9.2.0" },
 ]
+
+[[package]]
+name = "pico-tooling"
+version = "0.2.3"
+source = { git = "https://github.com/jamesfxley/pico-tooling?rev=v0.2.3#4f36094b2cb8de07b665e64ad5fe06ecf49ca55d" }
 
 [[package]]
 name = "pluggy"

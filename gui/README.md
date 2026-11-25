@@ -20,9 +20,6 @@ rate of each sensor. Richer panels are not built yet.
 
 - Python 3.11 or newer, tested on 3.11 and 3.14.
 - [uv](https://docs.astral.sh/uv/), which installs from `uv.lock`.
-- The `pico_tooling` package, for every run and every test run. It is not yet
-  in the lock (see [Dependencies](#dependencies)); until it is, put a
-  pico-tooling checkout on `PYTHONPATH`.
 
 Install and run from this directory. `--locked` refuses a lock that does not
 match `pyproject.toml`.
@@ -129,15 +126,15 @@ movable to a repository of its own:
 
 ## Dependencies
 
-The runtime dependency is NiceGUI, pinned exactly. pytest and mypy are
-development dependencies. `uv.lock` records every package with its hash,
-including transitive ones.
+The runtime dependencies are NiceGUI, pinned exactly, and pico-tooling, a git
+dependency on its `v0.2.3` tag. pytest and mypy are development dependencies.
+`uv.lock` records each registry package with its hash and the git dependency by
+the commit its tag names, including transitive packages.
 
-`pico_tooling` becomes a locked dependency once it is installable as a
-package. Until then it is not in `pyproject.toml` or `uv.lock`, and
-`pico_tooling` must be on `PYTHONPATH`. `stubs/pico_tooling` declares the part
-of its interface that `pico_gui` uses, so mypy checks the adapter without the
-package; the stubs go when the package is installed.
+pico-tooling ships no `py.typed`, so strict mypy treats the installed package
+as untyped. `stubs/pico_tooling` declares the part of its interface that
+`pico_gui` uses, so mypy checks the adapter against a typed interface; the
+stubs go when the package ships a `py.typed`.
 
 Setting `PYTHONWARNDEFAULTENCODING=1` for the test run, which PY-02.5 uses to
 find text I/O without an encoding, fails at import: NiceGUI opens a file

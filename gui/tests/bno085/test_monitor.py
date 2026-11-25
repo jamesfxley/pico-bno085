@@ -47,7 +47,7 @@ def test_a_recorded_session_replays_into_the_model() -> None:
         42,
     ]
     by_sensor = {stats.sensor: stats for stats in snapshot.sensors}
-    # LP-4: the G line prints sequence 0 every time; that is not loss.
+    # The GIRV report has no sequence field, so its line is not a gap source.
     assert by_sensor[42].missing == 0
     assert by_sensor[42].count > 1
     assert snapshot.replies >= 8

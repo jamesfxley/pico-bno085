@@ -3,6 +3,7 @@
 
 import argparse
 import functools
+import math
 import sys
 import time
 from collections.abc import Sequence
@@ -21,6 +22,17 @@ REPLAY_LINES_PER_SECOND = 2000.0
 EXIT_CANNOT_RUN = 2
 
 
+def positive_number(text: str) -> float:
+    """Parse a finite number above zero for `argparse`."""
+    try:
+        number = float(text)
+    except ValueError:
+        raise argparse.ArgumentTypeError(f"{text!r} is not a number") from None
+    if not math.isfinite(number) or number <= 0:
+        raise argparse.ArgumentTypeError(f"{text!r} is not above zero")
+    return number
+
+
 def parser() -> argparse.ArgumentParser:
     """Return the launcher's argument parser."""
     result = argparse.ArgumentParser(
@@ -37,7 +49,7 @@ def parser() -> argparse.ArgumentParser:
     result.add_argument("--record", type=Path, help="write received lines to a file")
     result.add_argument(
         "--replay-rate",
-        type=float,
+        type=positive_number,
         default=REPLAY_LINES_PER_SECOND,
         help="lines a second of a replay (default %(default)s)",
     )

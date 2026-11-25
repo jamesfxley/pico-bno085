@@ -94,10 +94,22 @@ def test_lp6_nan_is_a_value() -> None:
     assert math.isnan(line.values[0])
 
 
-def test_lp6_a_negative_value_rounded_to_zero_prints_without_a_sign() -> None:
+def test_lp6_zero_prints_without_a_sign() -> None:
     line = parse_line("V,1,0,1,0,0.00000,0.00000,0.00000")
     assert isinstance(line, Telemetry)
     assert line.values == (0.0, 0.0, 0.0)
+
+
+@pytest.mark.parametrize("value", ["-0.00000", "-000.00000"])
+def test_lp6_a_zero_with_a_sign_is_refused(value: str) -> None:
+    with pytest.raises(ProtocolError, match=r"zero with a sign \(LP-6\)"):
+        parse_line(f"V,1,0,1,0,0.00000,{value},0.00000")
+
+
+def test_lp6_a_small_negative_number_is_accepted() -> None:
+    line = parse_line("V,1,0,1,0,-0.00001,0.00000,0.00000")
+    assert isinstance(line, Telemetry)
+    assert line.values[0] == -0.00001
 
 
 @pytest.mark.parametrize(
@@ -252,26 +264,73 @@ def test_lp7_any_other_response_prints_its_raw_result() -> None:
     )
 
 
+DCD_KEYS = "# dcd line must have exactly status (LP-7)"
+CAL_KEYS = "# cal line must have exactly status, accel, gyro, mag, planar, table (LP-7)"
+RESP_KEYS = "# resp line must have exactly cmd, seq, rseq, r (LP-7)"
+
+
+@pytest.mark.parametrize(
+    ("text", "message"),
+    [
+        ("# dcd", DCD_KEYS),
+        ("# dcd status=x", "status 'x' is not a decimal number"),
+        ("# dcd status=256", "status 256 is above 255"),
+        ("# dcd status=0 extra=1", DCD_KEYS),
+        ("# dcd status=0 extra", DCD_KEYS),
+        ("# cal status=0 accel=1 gyro=0 mag=1 planar=0", CAL_KEYS),
+        ("# cal status=0 accel=1 mag=1 gyro=0 planar=0 table=0", CAL_KEYS),
+        (
+            "# cal status=0 accel=1 gyro=0 mag=1 planar=0 table=300",
+            "table 300 is above 255",
+        ),
+        (
+            "# resp cmd=0c seq=4 rseq=1 r=0001020304050607080a",
+            "resp r must be twenty-two hex digits (LP-7)",
+        ),
+        (
+            "# resp cmd=0c seq=4 rseq=1 r=0001020304050607080a0B",
+            "resp r must be twenty-two hex digits (LP-7)",
+        ),
+        (
+            "# resp cmd=c seq=4 rseq=1 r=0001020304050607080a0b",
+            "resp cmd must be two hex digits (LP-7)",
+        ),
+        ("# resp cmd=0c seq=4 rseq=1", RESP_KEYS),
+        (
+            "# resp cmd=0c seq=x rseq=1 r=0001020304050607080a0b",
+            "seq 'x' is not a decimal number",
+        ),
+    ],
+)
+def test_lp7_a_malformed_response_is_refused(text: str, message: str) -> None:
+    with pytest.raises(ProtocolError) as caught:
+        parse_line(text)
+    assert str(caught.value) == message
+
+
+def padded_response(word: str, length: int) -> str:
+    """Return a well-formed `# dcd` line of `length` characters, by padding a key."""
+    base = f"# {word} status=0"
+    return base + "0" * (length - len(base))
+
+
+def test_lp1_a_command_response_of_127_characters_is_accepted() -> None:
+    text = padded_response("dcd", 127)
+    assert len(text) == 127
+    assert parse_line(text) == SaveDcdStatus(0)
+
+
 @pytest.mark.parametrize(
     "text",
     [
-        "# dcd",
-        "# dcd status=x",
-        "# dcd status=256",
-        "# dcd status=0 extra=1",
-        "# dcd status=0 extra",
-        "# cal status=0 accel=1 gyro=0 mag=1 planar=0",
-        "# cal status=0 accel=1 mag=1 gyro=0 planar=0 table=0",
-        "# cal status=0 accel=1 gyro=0 mag=1 planar=0 table=300",
-        "# resp cmd=0c seq=4 rseq=1 r=0001020304050607080a",
-        "# resp cmd=0c seq=4 rseq=1 r=0001020304050607080a0B",
-        "# resp cmd=c seq=4 rseq=1 r=0001020304050607080a0b",
-        "# resp cmd=0c seq=4 rseq=1",
-        "# resp cmd=0c seq=x rseq=1 r=0001020304050607080a0b",
+        padded_response("dcd", 128),
+        "# cal status=0 accel=1 gyro=0 mag=1 planar=0 table=" + "0" * 80,
+        "# resp cmd=0c seq=4 rseq=1 r=0001020304050607080a0b" + " " * 100,
     ],
 )
-def test_lp7_a_malformed_response_is_refused(text: str) -> None:
-    with pytest.raises(ProtocolError, match=r"LP-7|decimal|above"):
+def test_lp1_a_command_response_over_127_characters_is_refused(text: str) -> None:
+    assert len(text) > 127
+    with pytest.raises(ProtocolError, match=r"longer than 127 characters \(LP-1\)"):
         parse_line(text)
 
 

@@ -2,15 +2,19 @@
 """Start a GUI server and tell the user how to reach it."""
 
 import argparse
+import asyncio
 import contextlib
+import sys
 from collections.abc import Callable
 from dataclasses import dataclass
 
 from nicegui import app, ui
+from nicegui import server as nicegui_server
 
 DEFAULT_HOST = "127.0.0.1"
 DEFAULT_PORT = 8080
 MAX_PORT = 65535
+POLL_SECONDS = 0.05
 
 
 @dataclass(frozen=True)
@@ -50,26 +54,57 @@ def add_server_arguments(parser: argparse.ArgumentParser) -> None:
 def forwarding_steps(port: int) -> str:
     """Return the steps that let the Windows browser reach `port`.
 
-    The first step follows the Dev Containers documentation. VS Code's
-    documentation does not describe removing a forwarded port, so the last
-    step is UNCONFIRMED.
+    Sources: the Dev Containers documentation, "Forwarding or publishing a
+    port", and the VS Code port forwarding documentation. Neither describes
+    stopping a forward before the VS Code session ends, so the text does not.
     """
     return (
-        f"To open the GUI in the browser on the host, forward port {port} in VS Code:\n"
-        f"  1. Press F1 and run 'Forward a Port', or open the Ports view and add a\n"
-        f"     port, and enter {port}.\n"
-        f"  2. Open the forwarded address that VS Code shows; its local port can\n"
-        f"     differ from {port}.\n"
-        f"To stop forwarding, remove port {port} in the Ports view\n"
-        f"(UNCONFIRMED: the VS Code documentation does not describe this step).\n"
+        f"The GUI server is listening on port {port}. To open it in the browser\n"
+        f"on the host, forward the port in VS Code:\n"
+        f"  1. Run 'Forward a Port' from the Command Palette (F1), or use\n"
+        f"     'Forward a Port' in the Ports view, and enter {port}.\n"
+        f"  2. Open the localhost address that VS Code reports. It may differ\n"
+        f"     from port {port}.\n"
+        f"A temporary forward lasts for the duration of the VS Code session.\n"
         f"Press Ctrl+C here to stop the server."
     )
 
 
-def shutdown_message(port: int) -> str:
+def shutdown_message() -> str:
     """Return what the launcher says when the server has stopped."""
+    return "Server stopped."
+
+
+def bind_failure_message(server: Server) -> str:
+    """Return what the launcher says when the server could not start."""
     return (
-        f"Server stopped. Forwarded port {port} can now be removed in the Ports view."
+        f"cannot serve on {server.host}:{server.port}; the port may be in use. "
+        f"Choose another with --port."
+    )
+
+
+def announce_when_started(
+    loop: asyncio.AbstractEventLoop,
+    started: Callable[[], bool],
+    say: Callable[[str], None],
+    port: int,
+    *,
+    poll_seconds: float = POLL_SECONDS,
+) -> None:
+    """Say how to reach `port` once `started` is true, checking on `loop`.
+
+    A server that never binds never says anything.
+    """
+    if started():
+        say(forwarding_steps(port))
+        return
+    loop.call_later(
+        poll_seconds,
+        announce_when_started,
+        loop,
+        started,
+        say,
+        port,
     )
 
 
@@ -81,17 +116,37 @@ def run(
 ) -> None:
     """Serve `build_page` at `/` until interrupted, then run `on_shutdown`.
 
-    Output goes to standard output. Ctrl+C stops the server cleanly.
+    The forwarding steps go to standard output once the server has bound its
+    port. Ctrl+C stops the server cleanly. A port that cannot be bound is
+    reported on standard error and the exit status is non-zero.
     """
-    print(forwarding_steps(server.port), flush=True)
+
+    def say(text: str) -> None:
+        print(text, flush=True)
+
+    def announce() -> None:
+        announce_when_started(
+            asyncio.get_running_loop(),
+            lambda: nicegui_server.Server.instance.started,
+            say,
+            server.port,
+        )
+
     ui.page("/")(build_page)
     app.on_shutdown(on_shutdown)
-    with contextlib.suppress(KeyboardInterrupt):
-        ui.run(
-            host=server.host,
-            port=server.port,
-            title=title,
-            reload=False,
-            show=False,
-        )
-    print(shutdown_message(server.port), flush=True)
+    app.on_startup(announce)
+    try:
+        with contextlib.suppress(KeyboardInterrupt):
+            ui.run(
+                host=server.host,
+                port=server.port,
+                title=title,
+                reload=False,
+                show=False,
+            )
+    except SystemExit:
+        if not nicegui_server.Server.instance.started:
+            on_shutdown()
+            print(bind_failure_message(server), file=sys.stderr, flush=True)
+        raise
+    print(shutdown_message(), flush=True)

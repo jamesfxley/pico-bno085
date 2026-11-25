@@ -12,7 +12,9 @@ from enum import Enum
 
 # LP-1: a telemetry line or command response is at most 127 characters.
 TELEMETRY_LIMIT = 127
-# LP-1 sets no limit on a reply. The `# stats` line runs past 600 characters.
+# LP-1: the words of the command responses of LP-7, which the limit covers.
+RESPONSE_WORDS = frozenset({"dcd", "cal", "resp"})
+# LP-1 sets no limit on any other reply. The `# stats` line runs past 600 characters.
 LINE_LIMIT = 2048
 
 SEQUENCE_MODULUS = 256
@@ -119,7 +121,7 @@ def parse_line(text: str) -> Line:
     if len(text) > LINE_LIMIT:
         raise ProtocolError(f"line is longer than {LINE_LIMIT} characters")
     if text.startswith("# "):
-        return _parse_reply(text[2:])
+        return _parse_reply(text[2:], len(text))
     if len(text) > 1 and text[1] == "," and text[0] in {kind.value for kind in Kind}:
         return _parse_telemetry(Kind(text[0]), text)
     raise ProtocolError(f"not a protocol line: {text[:40]!r}")
@@ -160,11 +162,19 @@ def _number(field: str, name: str) -> float:
         raise ProtocolError(
             f"{name} {field!r} is not a number with five decimals (LP-6)",
         )
-    return float(field)
+    value = float(field)
+    if value == 0.0 and field.startswith("-"):
+        # LP-6: a negative value that rounds to zero prints without its sign.
+        raise ProtocolError(f"{name} {field!r} is a zero with a sign (LP-6)")
+    return value
 
 
-def _parse_reply(body: str) -> Line:
+def _parse_reply(body: str, length: int) -> Line:
     tokens = body.split(" ")
+    if tokens[0] in RESPONSE_WORDS and length > TELEMETRY_LIMIT:
+        raise ProtocolError(
+            f"# {tokens[0]} line is longer than {TELEMETRY_LIMIT} characters (LP-1)",
+        )
     if not body or "" in tokens:
         raise ProtocolError("reply has an empty word")
     word, rest = tokens[0], tokens[1:]

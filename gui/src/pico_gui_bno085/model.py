@@ -12,6 +12,10 @@ from pico_gui_bno085.protocol import (
     Telemetry,
 )
 
+# LP-3: `# ready` is printed each time the session reaches READY. LP-4: events
+# print only between `run` and its `# done`, so a jump in a sensor's sequence
+# across two runs is not a loss.
+RESTART_WORDS = frozenset({"ready", "run"})
 DEFAULT_CAPACITY = 2048
 DEFAULT_WINDOW_SECONDS = 1.0
 
@@ -81,7 +85,7 @@ class Model:
         self._replies += 1
         if isinstance(line, Reply):
             self._last_reply = line
-            if line.word == "ready":
+            if line.word in RESTART_WORDS:
                 self._restart_sequences()
 
     def reject(self) -> None:
@@ -121,8 +125,10 @@ class Model:
         self._sequence(track, sample)
 
     def _sequence(self, track: _Track, sample: Telemetry) -> None:
-        # LP-4: the GIRV line (tag G, sensor 42) prints sequence 0 on every
-        # line on the device, so its sequence says nothing about loss.
+        # The GIRV input report has no report ID, sequence or status field
+        # (1000-3625 section 6.5.44.2, Figure 119), so the sequence and the
+        # accuracy of the G line are placeholders. They stay out of the gap
+        # statistics.
         if sample.kind is Kind.G:
             return
         previous = track.previous_seq
@@ -135,8 +141,6 @@ class Model:
             track.missing += (sample.seq - previous - 1) % SEQUENCE_MODULUS
 
     def _restart_sequences(self) -> None:
-        # LP-3: `# ready` marks a session reaching READY; the hub's sequence
-        # counters may restart there, which is not a loss.
         for track in self._tracks.values():
             track.previous_seq = None
 

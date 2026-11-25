@@ -20,8 +20,9 @@ rate of each sensor. Richer panels are not built yet.
 
 - Python 3.11 or newer, tested on 3.11 and 3.14.
 - [uv](https://docs.astral.sh/uv/), which installs from `uv.lock`.
-- The `pico_tooling` package, for a board. It is not yet in the lock (see
-  [Dependencies](#dependencies)); until it is, put it on `PYTHONPATH`.
+- The `pico_tooling` package, for every run and every test run. It is not yet
+  in the lock (see [Dependencies](#dependencies)); until it is, put a
+  pico-tooling checkout on `PYTHONPATH`.
 
 Install and run from this directory. `--locked` refuses a lock that does not
 match `pyproject.toml`.
@@ -55,7 +56,7 @@ port.
 | `--replay FILE` | Replay a recording instead. Exactly one of the two is needed. |
 | `--device-port P` | The board's serial port, if it has several. |
 | `--record FILE` | Write each received line to `FILE`. |
-| `--replay-rate N` | Lines a second of a replay. The default is 2000. |
+| `--replay-rate N` | Lines a second of a replay, above zero. The default is 2000. |
 | `--host ADDRESS` | Address to listen on. The default is `127.0.0.1`. |
 | `--port N` | Port of the GUI server. The default is 8080. |
 
@@ -64,25 +65,37 @@ standard error.
 
 ## Record and replay
 
-`--record` writes the lines exactly as the device sent them, one per line,
-with no timestamps. A recording needs no conversion to serve as a replay or a
-test fixture. The files in `tests/data` are recordings.
+`--record` writes the lines the session received, one per line, with no
+timestamps, and flushes each line. The lines are as the framer returns them: an
+empty line is absent, an overlong line is absent, a CR LF pair is one line feed
+and a byte outside ASCII is written as `?`. A recording needs no conversion to
+serve as a replay or a test fixture. The files in `tests/data` are recordings;
+`tests/data/README.md` records where each came from.
+
+A recording that cannot be written, for instance on a full disk, ends the
+session with the reason shown in the status.
 
 ## Port forwarding
 
-The launcher prints the steps at start. VS Code does not forward the port by
-itself. To open the GUI on the host:
+VS Code does not forward the port by itself. Once the server has bound its
+port, the launcher prints these steps. To open the GUI on the host:
 
-1. Press F1, run **Forward a Port** and enter the port the launcher names. The
-   Ports view also has a button that adds a port.
-2. Open the forwarded address VS Code shows. Its local port can differ from the
-   server's.
+1. Run **Forward a Port** from the Command Palette (F1), or use **Forward a
+   Port** in the **Ports** view, and enter the port the launcher names.
+2. Open the localhost address VS Code reports. It may differ from the
+   server's port.
 
-To stop forwarding, remove the port in the Ports view. VS Code's documentation
-does not describe this step, so the exact menu entry is UNCONFIRMED.
+A temporary forward lasts for the duration of the VS Code session. VS Code's
+documentation does not describe stopping a forward before the session ends.
 
-Press Ctrl+C in the terminal to stop the server. The launcher then says the
-forward can be removed. Use `--port` to choose another port when 8080 is taken.
+The steps follow the Dev Containers documentation
+([forwarding or publishing a port](https://code.visualstudio.com/docs/devcontainers/containers#_forwarding-or-publishing-a-port))
+and the VS Code [port forwarding](https://code.visualstudio.com/docs/debugtest/port-forwarding)
+documentation.
+
+Press Ctrl+C in the terminal to stop the server. When the port cannot be
+bound, the launcher prints no steps, says so on standard error and exits with
+a non-zero status. Use `--port` to choose another port when 8080 is taken.
 
 ## Checks
 
@@ -111,7 +124,7 @@ movable to a repository of its own:
 1. `pico_gui` imports nothing from any `pico_gui_<device>` package.
 2. No file here refers to a path outside this directory. The one exception is
    the `extend` line of `ruff.toml`, which names the House configuration.
-3. This directory has no build-system or firmware build dependency. It uses
+3. This directory depends on no firmware build or C++ build tool. It uses
    the device protocol through the specification's requirement IDs.
 4. Device access goes only through the `pico_gui` transport adapter over
    `pico_tooling.device_proxy`.
@@ -122,12 +135,11 @@ The runtime dependency is NiceGUI, pinned exactly. pytest and mypy are
 development dependencies. `uv.lock` records every package with its hash,
 including transitive ones.
 
-`pico_tooling` is meant to be a git dependency on the family's tag `v0.2.2`.
-That tag does not build as a package: its project file has no build system and
-its flat layout holds several top-level directories, so `uv lock` fails. It
-stays out of `pyproject.toml` until the tag installs. `stubs/pico_tooling`
-declares the part of its interface that `pico_gui` uses, so mypy checks the
-adapter without the package.
+`pico_tooling` becomes a locked dependency once it is installable as a
+package. Until then it is not in `pyproject.toml` or `uv.lock`, and
+`pico_tooling` must be on `PYTHONPATH`. `stubs/pico_tooling` declares the part
+of its interface that `pico_gui` uses, so mypy checks the adapter without the
+package; the stubs go when the package is installed.
 
 Setting `PYTHONWARNDEFAULTENCODING=1` for the test run, which PY-02.5 uses to
 find text I/O without an encoding, fails at import: NiceGUI opens a file

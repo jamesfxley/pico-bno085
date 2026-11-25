@@ -85,7 +85,7 @@ def test_a_repeated_sequence_is_a_repeat_and_not_a_gap() -> None:
     assert (stats.missing, stats.repeats) == (0, 1)
 
 
-def test_girv_lines_that_all_print_sequence_zero_are_not_gaps() -> None:
+def test_girv_lines_have_no_sequence_and_are_not_gaps() -> None:
     model = Model()
     for _ in range(10):
         model.feed(sample(42, 0, Kind.G), 0.0)
@@ -108,6 +108,34 @@ def test_a_ready_reply_restarts_sequence_tracking() -> None:
     model.feed(Reply("ready", (), {}), 0.1)
     model.feed(sample(seq=3), 0.2)
     assert model.snapshot(0.2).sensors[0].missing == 0
+
+
+def test_a_run_reply_restarts_sequence_tracking() -> None:
+    model = Model()
+    model.feed(Reply("run", ("1000",), {}), 0.0)
+    model.feed(sample(seq=100), 0.1)
+    model.feed(sample(seq=101), 0.2)
+    model.feed(Reply("done", (), {"events": "2"}), 0.3)
+    model.feed(Reply("run", ("1000",), {}), 5.0)
+    model.feed(sample(seq=7), 5.1)
+    assert model.snapshot(5.1).sensors[0].missing == 0
+
+
+def test_a_gap_inside_a_run_is_still_counted() -> None:
+    model = Model()
+    model.feed(Reply("run", ("1000",), {}), 0.0)
+    for seq in (100, 103):
+        model.feed(sample(seq=seq), 0.1)
+    assert model.snapshot(0.1).sensors[0].missing == 2
+
+
+def test_other_replies_do_not_restart_sequence_tracking() -> None:
+    model = Model()
+    model.feed(sample(seq=100), 0.0)
+    model.feed(Reply("done", (), {}), 0.1)
+    model.feed(Reply("ok", (), {}), 0.1)
+    model.feed(sample(seq=103), 0.2)
+    assert model.snapshot(0.2).sensors[0].missing == 2
 
 
 def test_replies_and_rejected_lines_are_counted() -> None:

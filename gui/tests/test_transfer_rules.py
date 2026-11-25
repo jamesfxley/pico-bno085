@@ -7,6 +7,7 @@ that breaks it and then on the tree.
 """
 
 import ast
+import posixpath
 import re
 from collections.abc import Iterator
 from pathlib import Path
@@ -94,27 +95,55 @@ def test_rule_1_a_device_package_imports_the_core_and_itself_only() -> None:
 
 
 # Rule 2: no file in `gui/` references a path outside `gui/`.
+START = r"(?:^|[\s\"'`(=\[,])"
+# A path that is outside `gui/` wherever the file sits: absolute, in a home
+# directory, on a Windows drive, or a sibling of `gui/` in the repository.
 OUTSIDE_PATH = re.compile(
-    r"""(?:^|[\s"'`(=\[,])(?:
-        \.\.[/\\]                                    # parent directory
-        | /(?:home|workspaces|tmp|usr|etc|mnt|opt|var|root)/   # absolute path
+    START
+    + r"""(?:
+        /[A-Za-z_.][\w.\-]*                          # absolute path
+        | ~[/\\]                                     # home directory
+        | \$HOME\b | %USERPROFILE%                   # home directory variable
         | [A-Za-z]:\\                                # Windows drive
-        | (?:infra|examples|cmake)/                  # sibling of gui/
+        | (?:infra|examples|cmake|docs|include|\.github|build[\w\-]*)/
+        | src/pico_bno085\b
+        | tests/(?:driver|bench|gui)\b
         | (?:CMakeLists\.txt|pico\.toml|house\.toml|dev\.py)\b
     )""",
     re.VERBOSE,
 )
+PARENT_TOKEN = re.compile(r"[^\s\"'`()=\[\],]*\.\.[/\\][^\s\"'`()=\[\],]*")
+PARENTS_INDEX = re.compile(r"\.parents\[(\d+)\]")
 # `ruff.toml` names the House configuration it extends. The path changes when
-# `gui/` moves, so this one key is allowed.
+# `gui/` moves, so this one line of this one file is allowed.
 ALLOWED_OUTSIDE = {("ruff.toml", 'extend = "../infra/house/config/ruff.toml"')}
 
 
-def outside_references(name: str, text: str) -> list[str]:
-    return [
-        line.strip()
-        for line in text.splitlines()
-        if OUTSIDE_PATH.search(line) and (name, line.strip()) not in ALLOWED_OUTSIDE
-    ]
+def climbs_out(relative: str, token: str) -> bool:
+    """Say whether `token`, written in the file `relative`, leaves `gui/`."""
+    here = posixpath.dirname(relative)
+    resolved = posixpath.normpath(posixpath.join(here, token.replace("\\", "/")))
+    return resolved == ".." or resolved.startswith("../")
+
+
+def outside_references(relative: str, text: str) -> list[str]:
+    """Return the lines of `text` that name a path outside `gui/`.
+
+    `relative` is the file's path below `gui/`, with forward slashes.
+    """
+    depth = len(relative.split("/"))
+    found = []
+    for raw in text.splitlines():
+        line = raw.strip()
+        if (relative, line) in ALLOWED_OUTSIDE:
+            continue
+        if (
+            OUTSIDE_PATH.search(line)
+            or any(climbs_out(relative, t) for t in PARENT_TOKEN.findall(line))
+            or any(int(n) >= depth for n in PARENTS_INDEX.findall(line))
+        ):
+            found.append(line)
+    return found
 
 
 @pytest.mark.parametrize(
@@ -123,37 +152,69 @@ def outside_references(name: str, text: str) -> list[str]:
         'path = "../infra/x"',
         "open('/home/user/file')",
         "see /workspaces/plans/gui",
+        "cat /proc/cpuinfo",
+        "read /dev/ttyACM0",
+        "ls ~/notes",
+        "echo $HOME",
         r"C:\Users\someone",
         "read infra/guides/device.md",
         "include(cmake/house.cmake)",
         "uses examples/bench/bench.py",
+        "see docs/technical-specification.md",
+        "see include/pico_bno085/bno085.hpp",
+        "see src/pico_bno085/driver.cpp",
         "run dev.py check",
+        "Path(__file__).parents[3]",
     ],
 )
 def test_rule_2_the_checker_finds_a_path_outside(line: str) -> None:
     assert outside_references("x.md", line)
 
 
+def test_rule_2_a_parent_path_is_resolved_from_the_file() -> None:
+    assert outside_references("tests/core/x.py", '"../../../infra/x"')
+    assert outside_references("tests/core/x.py", '"../../../x"')
+    assert outside_references("tests/core/x.py", "../../..")
+    assert outside_references("tests/x.py", "data = '../../x'")
+
+
 @pytest.mark.parametrize(
-    "line",
+    ("relative", "line"),
     [
-        "https://github.com/jamesfxley/pico-tooling.git",
-        "src/pico_gui/shell.py",
-        "tests/data/session.txt",
-        "a/b",
-        "forward port 8080",
+        ("tests/core/x.py", '"../data/session.txt"'),
+        ("tests/core/x.py", '"../../src/pico_gui"'),
+        ("tests/core/x.py", "Path(__file__).parents[2]"),
+        ("tests/core/x.py", "see ../core/y.py"),
+        ("x.md", "https://github.com/jamesfxley/pico-tooling.git"),
+        ("x.md", "src/pico_gui/shell.py"),
+        ("x.md", "tests/data/session.txt"),
+        ("x.md", "a/b"),
+        ("x.md", "and/or"),
+        ("x.md", "forward port 8080"),
     ],
 )
-def test_rule_2_the_checker_accepts_paths_inside(line: str) -> None:
-    assert outside_references("x.md", line) == []
+def test_rule_2_the_checker_accepts_paths_inside(relative: str, line: str) -> None:
+    assert outside_references(relative, line) == []
+
+
+def test_rule_2_only_the_house_extend_line_is_allowed() -> None:
+    allowed = 'extend = "../infra/house/config/ruff.toml"'
+    assert outside_references("ruff.toml", allowed) == []
+    assert outside_references("ruff.toml", 'extend = "../infra/other.toml"')
+    assert outside_references("x.md", allowed)
 
 
 def test_rule_2_no_file_references_a_path_outside_gui() -> None:
     found = {
-        str(path.relative_to(GUI)): hits
+        relative: hits
         for path in gui_files()
         if path != THIS_FILE
-        and (hits := outside_references(path.name, path.read_text(encoding="utf-8")))
+        and (
+            hits := outside_references(
+                relative := path.relative_to(GUI).as_posix(),
+                path.read_text(encoding="utf-8"),
+            )
+        )
     }
     assert found == {}
 
@@ -186,31 +247,73 @@ def test_rule_3_no_file_names_a_build_tool_or_firmware_image() -> None:
 
 
 # Rule 4: device access goes only through the `pico_gui` transport adapter over
-# `pico_tooling.device_proxy`.
-ADAPTER_MODULES = {"device.py", "fakes.py"}
-DEVICE_ACCESS = {"pico_tooling", "serial", "usb", "hid", "subprocess", "ctypes"}
+# `pico_tooling.device_proxy`. Each module of `pico_gui` may use only the
+# names listed for it; every other module uses none of them.
+DEVICE_ACCESS = {
+    "pico_tooling",
+    "serial",
+    "usb",
+    "hid",
+    "subprocess",
+    "ctypes",
+    "socket",
+    "termios",
+    "pty",
+    "fcntl",
+    "importlib",
+    "__import__",
+}
+ALLOWED_ACCESS = {
+    "device.py": {"pico_tooling"},
+    "fakes.py": {"pico_tooling"},
+    "transport.py": {"socket"},
+}
 
 
 def device_access(source: str) -> set[str]:
-    return top_level(imported_modules(source)) & DEVICE_ACCESS
+    """Return the device-access names that `source` imports or calls.
 
-
-def test_rule_4_the_checker_finds_device_access() -> None:
-    assert device_access("import serial") == {"serial"}
-    assert device_access("from pico_tooling.device_proxy import Proxy") == {
-        "pico_tooling",
+    A call of `__import__` counts as a dynamic import of any module.
+    """
+    tree = ast.parse(source)
+    calls = {
+        node.func.id
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
     }
-    assert device_access("import subprocess, os") == {"subprocess"}
-    assert device_access("import socket") == set()
+    return (top_level(imported_modules(source)) | calls) & DEVICE_ACCESS
 
 
-def test_rule_4_only_the_adapter_modules_import_the_proxy_client() -> None:
+@pytest.mark.parametrize(
+    ("source", "expected"),
+    [
+        ("import serial", {"serial"}),
+        ("from pico_tooling.device_proxy import Proxy", {"pico_tooling"}),
+        ("import subprocess, os", {"subprocess"}),
+        ("import socket", {"socket"}),
+        ("from socket import create_connection", {"socket"}),
+        ("import termios", {"termios"}),
+        ("import pty", {"pty"}),
+        ("import importlib", {"importlib"}),
+        ("from importlib import import_module", {"importlib"}),
+        ("module = __import__('pico_tooling')", {"__import__"}),
+        ("import os, json", set()),
+    ],
+)
+def test_rule_4_the_checker_finds_device_access(
+    source: str,
+    expected: set[str],
+) -> None:
+    assert device_access(source) == expected
+
+
+def test_rule_4_only_the_adapter_modules_may_import_the_proxy_client() -> None:
     found = {
         path.name
         for path in sources("pico_gui")
         if "pico_tooling" in device_access(path.read_text(encoding="utf-8"))
     }
-    assert found == ADAPTER_MODULES
+    assert found <= {"device.py", "fakes.py"}
 
 
 def test_rule_4_the_adapter_reaches_the_proxy_through_device_proxy() -> None:
@@ -218,13 +321,14 @@ def test_rule_4_the_adapter_reaches_the_proxy_through_device_proxy() -> None:
     assert "pico_tooling.device_proxy" in imported_modules(text)
 
 
-def test_rule_4_no_other_module_opens_a_device_another_way() -> None:
+def test_rule_4_no_module_opens_a_device_another_way() -> None:
     found = {}
     for package in ("pico_gui", "pico_gui_bno085"):
         for path in sources(package):
-            if package == "pico_gui" and path.name in ADAPTER_MODULES:
-                continue
-            access = device_access(path.read_text(encoding="utf-8"))
-            if access:
-                found[f"{package}/{path.name}"] = access
+            allowed = (
+                ALLOWED_ACCESS.get(path.name, set()) if package == "pico_gui" else set()
+            )
+            extra = device_access(path.read_text(encoding="utf-8")) - allowed
+            if extra:
+                found[f"{package}/{path.name}"] = extra
     assert found == {}

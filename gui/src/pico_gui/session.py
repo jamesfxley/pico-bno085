@@ -103,10 +103,18 @@ class Session:
         else:
             self._set(State.ENDED)
         finally:
-            if self._recorder is not None:
-                self._recorder.close()
+            self._close_recorder()
             if self._status.state is State.CONNECTED:
                 self._set(State.FAILED, "the reader stopped unexpectedly")
+
+    def _close_recorder(self) -> None:
+        if self._recorder is None:
+            return
+        try:
+            self._recorder.close()
+        except TransportError as error:
+            if self._status.state is not State.FAILED:
+                self._set(State.FAILED, str(error))
 
     def _pump(self) -> None:
         while not self._stop.is_set():

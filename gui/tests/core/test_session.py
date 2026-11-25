@@ -9,6 +9,7 @@ from pico_gui.recorder import Recorder
 from pico_gui.replay import ReplayTransport
 from pico_gui.session import Session, State, Status
 from pico_gui.transport import TransportError
+from tests.core.test_recorder import FailingStream
 
 WAIT_SECONDS = 5.0
 
@@ -138,3 +139,29 @@ def test_a_replay_is_recorded_line_for_line(tmp_path: Path) -> None:
     session.start()
     session.wait(WAIT_SECONDS)
     assert path.read_bytes() == data
+
+
+def test_a_failed_recording_write_is_the_status() -> None:
+    session = Session(
+        ScriptedTransport([b"a\n"]),
+        Collector(),
+        clock=lambda: 0.0,
+        recorder=Recorder(FailingStream(fail_write=True)),
+    )
+    session.start()
+    session.wait(WAIT_SECONDS)
+    assert session.status.state is State.FAILED
+    assert "no space left on device" in session.status.detail
+
+
+def test_a_failed_recording_close_is_the_status() -> None:
+    session = Session(
+        ScriptedTransport([b"a\n"]),
+        Collector(),
+        clock=lambda: 0.0,
+        recorder=Recorder(FailingStream(fail_close=True)),
+    )
+    session.start()
+    session.wait(WAIT_SECONDS)
+    assert session.status.state is State.FAILED
+    assert "input/output error" in session.status.detail

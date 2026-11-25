@@ -1,12 +1,16 @@
 # SPDX-License-Identifier: MIT
 import argparse
+import asyncio
 
 import pytest
 
 from pico_gui.launch import (
     DEFAULT_HOST,
     DEFAULT_PORT,
+    Server,
     add_server_arguments,
+    announce_when_started,
+    bind_failure_message,
     forwarding_steps,
     port_number,
     shutdown_message,
@@ -35,18 +39,68 @@ def test_a_bad_port_is_refused(text: str) -> None:
         port_number(text)
 
 
-def test_the_steps_name_the_exact_port_and_how_to_stop() -> None:
+def test_the_steps_name_the_exact_port_and_the_documented_actions() -> None:
     text = forwarding_steps(9100)
-    assert "forward port 9100" in text
-    assert "Forward a Port" in text
-    assert "remove port 9100" in text
+    assert "listening on port 9100" in text
+    assert "Command Palette (F1)" in text
+    assert "'Forward a Port' in the Ports view, and enter 9100" in text
+    assert "localhost address that VS Code reports" in text
+    assert "may differ" in text
+    assert "temporary forward lasts for the duration of the VS Code session" in text
     assert "Ctrl+C" in text
 
 
-def test_the_steps_mark_what_the_documentation_does_not_state() -> None:
-    assert "UNCONFIRMED" in forwarding_steps(8080)
+def test_the_steps_state_nothing_that_the_documentation_does_not() -> None:
+    text = forwarding_steps(8080)
+    assert "UNCONFIRMED" not in text
+    assert "remove" not in text.lower()
 
 
-def test_the_shutdown_message_says_the_forward_can_be_removed() -> None:
-    assert "9100" in shutdown_message(9100)
-    assert "can now be removed" in shutdown_message(9100)
+def test_the_shutdown_message_is_plain() -> None:
+    assert shutdown_message() == "Server stopped."
+
+
+def test_the_bind_failure_names_the_address_and_the_remedy() -> None:
+    message = bind_failure_message(Server("127.0.0.1", 9100))
+    assert "127.0.0.1:9100" in message
+    assert "--port" in message
+
+
+def test_the_steps_are_said_only_after_the_server_has_started() -> None:
+    said: list[str] = []
+    polls = iter([False, False, True])
+
+    def started() -> bool:
+        value = next(polls)
+        assert said == []
+        return value
+
+    async def attempt() -> None:
+        announce_when_started(
+            asyncio.get_running_loop(),
+            started,
+            said.append,
+            9100,
+            poll_seconds=0.001,
+        )
+        await asyncio.sleep(0.1)
+
+    asyncio.run(attempt())
+    assert said == [forwarding_steps(9100)]
+
+
+def test_nothing_is_said_while_the_server_has_not_started() -> None:
+    said: list[str] = []
+
+    async def attempt() -> None:
+        announce_when_started(
+            asyncio.get_running_loop(),
+            lambda: False,
+            said.append,
+            9100,
+            poll_seconds=0.001,
+        )
+        await asyncio.sleep(0.05)
+
+    asyncio.run(attempt())
+    assert said == []

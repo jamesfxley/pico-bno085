@@ -392,6 +392,20 @@ def select_bus(dev, bus):
     return wait_ready(dev)
 
 
+def disable_payload(dev):
+    """Turn payload lines off. They replace the E lines the cases count (LP-5)."""
+    dev.send("payload 0")
+    return dev.wait_for("# payload 0", 2.0) is not None
+
+
+def start_session(dev, bus):
+    """Turn payload off, which an earlier session can have left on, then select bus."""
+    if not disable_payload(dev):
+        print("warning: the firmware did not acknowledge 'payload 0'; is it "
+              "an older image?")
+    return select_bus(dev, bus)
+
+
 def snapshot(dev):
     """Read cumulative counters. Per-run counts are differences between readings."""
     dev.send("stat")
@@ -905,7 +919,7 @@ def main():
         # serial.SerialException is an OSError; so is a missing COM port.
         sys.exit(f"cannot open {port}: {exc}")
     # The firmware starts without a bus selected.
-    if not select_bus(dev, cfg.bus):
+    if not start_session(dev, cfg.bus):
         print(f"warning: the device never reached READY on {cfg.bus}; is the "
               "bench firmware flashed and the BNO085 wired?")
 

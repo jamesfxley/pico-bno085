@@ -42,6 +42,12 @@ The following hub behaviours lack device evidence and remain UNCONFIRMED:
 - The interrupt reference for fused reports and their sample phase relative
   to the gyroscope.
 - Calibration survival across `reset()`.
+- The layout of the tare response, which 1000-3625 §6.4.3 names but does not
+  give, and whether the get-calibration command answers with the layout of
+  §6.4.6.3 (LP-7).
+- The direction of the rotation a quaternion expresses, the axes of the
+  reference frame, and the reference the gyro-integrated rotation vector takes
+  by default (LP-6).
 - BNO086 support. The driver tolerates its zero-length packets, but no BNO086
   has been tested.
 
@@ -169,3 +175,32 @@ Adding captures and pico-sh2 decoders is not breaking (EN-06.1).
 ### Affected repositories
 
 pico-bno085; pico-sh2:FW-2, where the decoder table and vectors land.
+
+## FW-7 — Bench USB throughput with payload lines
+
+### What is absent
+
+No run has printed payload lines on the board, so the rate its USB stack
+sustains for them, and what a full link does to `service()`, are not measured.
+LP-8 bounds the line rate against the bus's ceiling only.
+
+### Why it is not built
+
+A measurement needs an authorised device session. USB 2.0 is not among the
+local references, so the ceiling LP-8 uses is also unchecked against its
+source.
+
+### What would have to be true to build it
+
+A device run enables the largest set the bench can run with payload on, counts
+lines against the rate the hub grants, and records the sequence gaps and the
+`service_latency_max_us` it reports. LP-8 is then restated against the figure
+it finds.
+
+### Version cost
+
+A measurement and specification wording are not breaking (EN-06.1).
+
+### Affected repositories
+
+pico-bno085.

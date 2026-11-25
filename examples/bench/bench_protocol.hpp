@@ -1,0 +1,733 @@
+// SPDX-License-Identifier: MIT
+#pragma once
+
+/// \file bench_protocol.hpp
+/// Line formatting and argument parsing for the bench firmware. The firmware
+/// and the host test (tests/bench) share these functions, so what the test
+/// checks is what the firmware prints (LP-1).
+
+#include <algorithm>
+#include <array>
+#include <bit>
+#include <charconv>
+#include <cmath>
+#include <concepts>
+#include <cstddef>
+#include <cstdint>
+#include <optional>
+#include <span>
+#include <string_view>
+#include <system_error>
+#include <variant>
+
+#include "pico_bno085/driver/bno085.hpp"
+#include "pico_sh2/reports/sensor_event.hpp"
+#include "pico_sh2/sh2/command.hpp"
+
+namespace pico_bno085::bench {
+
+/// Digits after the decimal point in a payload number (LP-6).
+inline constexpr int FIXED_DIGITS = 5;
+/// Ten to the power FIXED_DIGITS.
+inline constexpr std::int64_t FIXED_SCALE = 100'000;
+/// Magnitudes at or above this print as `nan`; no decoded field reaches it
+/// (LP-6).
+inline constexpr float FIXED_LIMIT = 1.0e9F;
+
+/// Longest line the formatters produce, including the terminating NUL (LP-1).
+inline constexpr std::size_t LINE_BUFFER_SIZE = 128;
+
+inline constexpr int BASE_DEC = 10;
+inline constexpr int BASE_HEX = 16;
+
+/// Payload lines for the kinds of sample that have one (LP-5).
+enum class LineTag : char {
+    EVENT = 'E',
+    ROTATION = 'Q',
+    GAME_ROTATION = 'R',
+    VECTOR = 'V',
+    UNCALIBRATED = 'U',
+    GYRO_INTEGRATED = 'G',
+};
+
+/// Appends to a caller's buffer and records overflow instead of truncating
+/// silently.
+class LineWriter {
+   public:
+    explicit LineWriter(std::span<char> out) : out_(out) {}
+
+    void put(char ch) { put(std::string_view(&ch, 1)); }
+
+    void put(std::string_view text) {
+        // One byte stays free for the terminating NUL.
+        const std::size_t room = out_.empty() ? 0 : out_.size() - 1 - size_;
+        const std::size_t count = text.size() < room ? text.size() : room;
+        std::copy_n(text.begin(), count,
+                    out_.begin() + static_cast<std::ptrdiff_t>(size_));
+        size_ += count;
+        overflow_ = overflow_ || count < text.size();
+    }
+
+    void put_uint(std::uint64_t value) {
+        std::array<char, 20> digits{};
+        const auto result =
+            std::to_chars(digits.data(), digits.data() + digits.size(), value);
+        put(std::string_view(digits.data(), static_cast<std::size_t>(
+                                                result.ptr - digits.data())));
+    }
+
+    /// Two lowercase hexadecimal digits.
+    void put_hex2(std::uint8_t value) {
+        constexpr std::string_view HEX_DIGITS = "0123456789abcdef";
+        constexpr unsigned NIBBLE_BITS = 4;
+        constexpr unsigned NIBBLE_MASK = 0x0FU;
+        const unsigned wide = value;
+        put(HEX_DIGITS[(wide >> NIBBLE_BITS) & NIBBLE_MASK]);
+        put(HEX_DIGITS[wide & NIBBLE_MASK]);
+    }
+
+    /// A decimal with FIXED_DIGITS places, rounded to nearest with ties away
+    /// from zero. A value that rounds to zero carries no sign (LP-6). It uses
+    /// no double arithmetic: the SDK places soft-double routines in RAM, and
+    /// they do not fit the bench's static RAM budget.
+    void put_fixed(float value) {
+        if (!std::isfinite(value) || std::fabs(value) >= FIXED_LIMIT) {
+            put("nan");
+            return;
+        }
+        constexpr std::uint32_t SIGN_MASK = 0x8000'0000U;
+        constexpr std::uint32_t EXPONENT_MASK = 0x0000'00FFU;
+        constexpr std::uint32_t FRACTION_MASK = 0x007F'FFFFU;
+        constexpr std::uint32_t HIDDEN_BIT = 0x0080'0000U;
+        constexpr unsigned FRACTION_BITS = 23;
+        constexpr int EXPONENT_BIAS = 127;
+        constexpr int EXPONENT_OFFSET =
+            EXPONENT_BIAS + static_cast<int>(FRACTION_BITS);
+        constexpr unsigned MAX_SHIFT = 63;
+        constexpr auto SCALE = static_cast<std::uint64_t>(FIXED_SCALE);
+        constexpr std::uint64_t TEN = 10;
+
+        const auto bits = std::bit_cast<std::uint32_t>(value);
+        const bool negative = (bits & SIGN_MASK) != 0;
+        const std::uint32_t exponent_field =
+            (bits >> FRACTION_BITS) & EXPONENT_MASK;
+        const std::uint32_t fraction = bits & FRACTION_MASK;
+        const std::uint64_t mantissa =
+            exponent_field == 0 ? fraction : fraction | HIDDEN_BIT;
+        const int exponent =
+            exponent_field == 0
+                ? 1 - EXPONENT_OFFSET
+                : static_cast<int>(exponent_field) - EXPONENT_OFFSET;
+        // The mantissa and scale need at most 41 bits, so this product is
+        // exact.
+        const std::uint64_t product = mantissa * SCALE;
+        std::uint64_t scaled = 0;
+        if (exponent >= 0) {
+            scaled = product << static_cast<unsigned>(exponent);
+        } else {
+            const auto shift = static_cast<unsigned>(-exponent);
+            if (shift <= MAX_SHIFT) {
+                scaled = (product + (std::uint64_t{1} << (shift - 1))) >> shift;
+            }
+        }
+        if (negative && scaled != 0) {
+            put('-');
+        }
+        put_uint(scaled / SCALE);
+        put('.');
+        const std::uint64_t remainder = scaled % SCALE;
+        std::uint64_t place = SCALE / TEN;
+        for (int digit = 0; digit < FIXED_DIGITS; ++digit) {
+            put(static_cast<char>('0' + ((remainder / place) % TEN)));
+            place /= TEN;
+        }
+    }
+
+    /// Append a name and a decimal value, such as ` seq=` and `12`.
+    void put_field(std::string_view name, std::uint64_t value) {
+        put(name);
+        put_uint(value);
+    }
+
+    /// Terminate the text. Return its length, or zero if it did not fit.
+    [[nodiscard]] std::size_t finish() {
+        if (overflow_ || out_.empty()) {
+            return 0;
+        }
+        out_[size_] = '\0';
+        return size_;
+    }
+
+   private:
+    std::span<char> out_;
+    std::size_t size_ = 0;
+    bool overflow_ = false;
+};
+
+/// The tag of the line that carries a sample of this kind, or EVENT for a kind
+/// with no payload line (LP-5).
+constexpr LineTag payload_tag(pico_sh2::reports::EventKind kind) {
+    using pico_sh2::reports::EventKind;
+    switch (kind) {
+        case EventKind::ROTATION:
+            return LineTag::ROTATION;
+        case EventKind::GAME_ROTATION:
+            return LineTag::GAME_ROTATION;
+        case EventKind::VECTOR:
+            return LineTag::VECTOR;
+        case EventKind::UNCALIBRATED:
+            return LineTag::UNCALIBRATED;
+        case EventKind::GYRO_INTEGRATED:
+            return LineTag::GYRO_INTEGRATED;
+        case EventKind::NONE:
+        case EventKind::TAP:
+        case EventKind::STEP_COUNT:
+        case EventKind::STEP_DETECT:
+        case EventKind::STABILITY:
+        case EventKind::RAW:
+            return LineTag::EVENT;
+    }
+    return LineTag::EVENT;
+}
+
+namespace detail {
+
+/// The numbers after the common fields of a payload line.
+class FieldList {
+   public:
+    static constexpr std::size_t CAPACITY = 7;
+
+    void add(float value) {
+        if (count_ < values_.size()) {
+            values_[count_] = value;
+            ++count_;
+        }
+    }
+
+    // Quaternion in the order w, i, j, k (LP-6).
+    void add(const pico_sh2::reports::Quaternion& quat) {
+        add(quat.real);
+        add(quat.i);
+        add(quat.j);
+        add(quat.k);
+    }
+
+    void add(const pico_sh2::reports::Vec3& vec) {
+        add(vec.x);
+        add(vec.y);
+        add(vec.z);
+    }
+
+    [[nodiscard]] std::span<const float> values() const {
+        return std::span<const float>(values_).first(count_);
+    }
+
+   private:
+    std::array<float, CAPACITY> values_{};
+    std::size_t count_ = 0;
+};
+
+// The numbers a sample contributes to its payload line, empty for a kind with
+// none.
+inline FieldList sample_fields(const pico_sh2::reports::SensorEvent& event) {
+    using pico_sh2::reports::GyroIntegratedSample;
+    using pico_sh2::reports::Quaternion;
+    using pico_sh2::reports::RotationSample;
+    using pico_sh2::reports::UncalibratedSample;
+    using pico_sh2::reports::Vec3;
+    FieldList fields;
+    if (const auto* rotation = std::get_if<RotationSample>(&event.payload)) {
+        fields.add(rotation->unit);
+        fields.add(rotation->accuracy_rad);
+    } else if (const auto* game = std::get_if<Quaternion>(&event.payload)) {
+        fields.add(*game);
+    } else if (const auto* vector = std::get_if<Vec3>(&event.payload)) {
+        fields.add(*vector);
+    } else if (const auto* raw =
+                   std::get_if<UncalibratedSample>(&event.payload)) {
+        fields.add(raw->value);
+        fields.add(raw->bias);
+    } else if (const auto* gyro =
+                   std::get_if<GyroIntegratedSample>(&event.payload)) {
+        fields.add(gyro->unit);
+        fields.add(gyro->angular_velocity);
+    }
+    return fields;
+}
+
+}  // namespace detail
+
+/// Format one event as a line ending in a newline and a NUL. With payload off
+/// it is the E line alone (LP-4); with payload on, a kind that has a payload
+/// line prints it instead of the E line (LP-5, LP-6).
+/// \return the length excluding the NUL, or zero if `out` is too small.
+inline std::size_t format_event(std::span<char> out,
+                                const pico_sh2::reports::SensorEvent& event,
+                                bool payload) {
+    const LineTag tag = payload ? payload_tag(event.kind()) : LineTag::EVENT;
+    LineWriter line(out);
+    line.put(static_cast<char>(tag));
+    line.put_field(",", static_cast<std::uint8_t>(event.sensor));
+    line.put_field(",", event.sequence);
+    line.put_field(",", event.event_us);
+    line.put_field(",", static_cast<std::uint8_t>(event.accuracy));
+    if (tag != LineTag::EVENT) {
+        const detail::FieldList fields = detail::sample_fields(event);
+        for (const float value : fields.values()) {
+            line.put(',');
+            line.put_fixed(value);
+        }
+    }
+    line.put('\n');
+    return line.finish();
+}
+
+/// Format a command response (LP-7). Save-DCD and ME-calibration responses are
+/// decoded; every other response is printed as its raw result bytes.
+/// \return the length excluding the NUL, or zero if `out` is too small.
+inline std::size_t format_command_response(
+    std::span<char> out, const pico_sh2::CommandResponse& response) {
+    LineWriter line(out);
+    const auto& results = response.results;
+    if (response.command == pico_sh2::command::SAVE_DCD) {
+        line.put_field("# dcd status=", results[0]);
+    } else if (response.command == pico_sh2::command::ME_CALIBRATION) {
+        line.put_field("# cal status=", results[0]);
+        line.put_field(" accel=", results[1]);
+        line.put_field(" gyro=", results[2]);
+        line.put_field(" mag=", results[3]);
+        line.put_field(" planar=", results[4]);
+        line.put_field(" table=", results[5]);
+    } else {
+        line.put("# resp cmd=");
+        line.put_hex2(response.command);
+        line.put_field(" seq=", response.command_sequence);
+        line.put_field(" rseq=", response.response_sequence);
+        line.put(" r=");
+        for (const std::uint8_t byte : results) {
+            line.put_hex2(byte);
+        }
+    }
+    line.put('\n');
+    return line.finish();
+}
+
+/// The lower-case name an error takes in an `# err` reply (LP-3).
+constexpr std::string_view error_name(Error error) {
+    switch (error) {
+        case Error::NONE:
+            return "none";
+        case Error::BUS_ERROR:
+            return "bus_error";
+        case Error::TIMEOUT:
+            return "timeout";
+        case Error::NOT_READY:
+            return "not_ready";
+        case Error::PROTOCOL:
+            return "protocol";
+        case Error::BUSY:
+            return "busy";
+        case Error::NO_ROOM:
+            return "no_room";
+        case Error::UNSUPPORTED:
+            return "unsupported";
+        case Error::INVALID_ARGUMENT:
+            return "invalid_argument";
+    }
+    return "unknown";
+}
+
+/// Parse and advance past an unsigned field. Return false if no digits parse.
+inline bool take_uint(std::string_view& text, unsigned& out, int base) {
+    while (!text.empty() && text.front() == ' ') {
+        text.remove_prefix(1);
+    }
+    auto [ptr, ec] =
+        std::from_chars(text.data(), text.data() + text.size(), out, base);
+    if (ec != std::errc()) {
+        return false;
+    }
+    text.remove_prefix(static_cast<std::size_t>(ptr - text.data()));
+    return true;
+}
+
+/// Parse one field that must be 0 or 1.
+inline bool take_flag(std::string_view& text, bool& out) {
+    unsigned value = 0;
+    if (!take_uint(text, value, BASE_DEC) || value > 1) {
+        return false;
+    }
+    out = value == 1;
+    return true;
+}
+
+/// True when only spaces remain.
+inline bool only_spaces(std::string_view text) {
+    return text.find_first_not_of(' ') == std::string_view::npos;
+}
+
+/// Parse `0|1` (LP-2).
+inline std::optional<bool> parse_flag(std::string_view args) {
+    bool value = false;
+    if (!take_flag(args, value) || !only_spaces(args)) {
+        return std::nullopt;
+    }
+    return value;
+}
+
+/// What a `bus` argument asks for (LP-2, LP-3).
+enum class BusChoice : std::uint8_t {
+    /// No argument: the line is answered `# err parse`.
+    MISSING,
+    /// An argument that names neither bus.
+    UNKNOWN,
+    I2C,
+    SPI,
+};
+
+/// Parse the argument of `bus`. Only `MISSING` and `UNKNOWN` leave the running
+/// transport alone, so a mistyped line does not end a session.
+inline BusChoice parse_bus(std::string_view args) {
+    if (only_spaces(args)) {
+        return BusChoice::MISSING;
+    }
+    if (args == "i2c") {
+        return BusChoice::I2C;
+    }
+    if (args == "spi") {
+        return BusChoice::SPI;
+    }
+    return BusChoice::UNKNOWN;
+}
+
+/// Parse `<axes_hex> <basis>` for tare: axes 7 or 4 and a basis from 0 to 5,
+/// the values the driver supports (LP-2).
+inline std::optional<Bno085::TareOptions> parse_tare(std::string_view args) {
+    constexpr unsigned MAX_BASIS = 5;
+    unsigned axes = 0;
+    unsigned basis = 0;
+    if (!take_uint(args, axes, BASE_HEX) || !take_uint(args, basis, BASE_DEC) ||
+        !only_spaces(args) || basis > MAX_BASIS) {
+        return std::nullopt;
+    }
+    if (axes != static_cast<unsigned>(Bno085::TareAxes::ALL) &&
+        axes != static_cast<unsigned>(Bno085::TareAxes::Z_ONLY)) {
+        return std::nullopt;
+    }
+    return Bno085::TareOptions{.axes = static_cast<Bno085::TareAxes>(axes),
+                               .basis = static_cast<Bno085::TareBasis>(basis)};
+}
+
+/// Parse `<accel> <gyro> <mag>`, each 0 or 1 (LP-2).
+inline std::optional<Bno085::CalibrationOptions> parse_calibration(
+    std::string_view args) {
+    Bno085::CalibrationOptions options;
+    if (!take_flag(args, options.accel) || !take_flag(args, options.gyro) ||
+        !take_flag(args, options.mag) || !only_spaces(args)) {
+        return std::nullopt;
+    }
+    return options;
+}
+
+/// The payload mode a power-up starts in (LP-5).
+inline constexpr bool PAYLOAD_DEFAULT = false;
+
+/// The first word of a command line (LP-2).
+enum class Word : std::uint8_t {
+    UNKNOWN,
+    BUS,
+    INFO,
+    PAYLOAD,
+    CFG,
+    OFF,
+    FLUSH,
+    RUN,
+    STAT,
+    HEAP,
+    RESET,
+    CLEARDCD,
+    TRACE,
+    BOOT,
+    TARE,
+    TAREPERSIST,
+    CAL,
+    CALGET,
+    SAVEDCD,
+    PDCD,
+};
+
+/// A command line split into its word and the text after it.
+struct Command {
+    Word word = Word::UNKNOWN;
+    std::string_view args;
+};
+
+namespace detail {
+
+struct WordEntry {
+    std::string_view name;
+    Word word;
+    bool takes_args;
+};
+
+inline constexpr std::array<WordEntry, 19> WORDS{{
+    {.name = "bus", .word = Word::BUS, .takes_args = true},
+    {.name = "info", .word = Word::INFO, .takes_args = false},
+    {.name = "payload", .word = Word::PAYLOAD, .takes_args = true},
+    {.name = "cfg", .word = Word::CFG, .takes_args = true},
+    {.name = "off", .word = Word::OFF, .takes_args = true},
+    {.name = "flush", .word = Word::FLUSH, .takes_args = true},
+    {.name = "run", .word = Word::RUN, .takes_args = true},
+    {.name = "stat", .word = Word::STAT, .takes_args = false},
+    {.name = "heap", .word = Word::HEAP, .takes_args = false},
+    {.name = "reset", .word = Word::RESET, .takes_args = false},
+    {.name = "cleardcd", .word = Word::CLEARDCD, .takes_args = false},
+    {.name = "trace", .word = Word::TRACE, .takes_args = true},
+    {.name = "boot", .word = Word::BOOT, .takes_args = false},
+    {.name = "tare", .word = Word::TARE, .takes_args = true},
+    {.name = "tarepersist", .word = Word::TAREPERSIST, .takes_args = false},
+    {.name = "cal", .word = Word::CAL, .takes_args = true},
+    {.name = "calget", .word = Word::CALGET, .takes_args = false},
+    {.name = "savedcd", .word = Word::SAVEDCD, .takes_args = false},
+    {.name = "pdcd", .word = Word::PDCD, .takes_args = true},
+}};
+
+}  // namespace detail
+
+/// Split a line at its first space (LP-2). A word that takes arguments is
+/// recognised without them, so that its parser can refuse the line with
+/// `# err parse`. A word that takes none is recognised only alone, and a line
+/// that gives it text, even a space, is UNKNOWN.
+inline Command split_command(std::string_view line) {
+    const std::size_t space = line.find(' ');
+    const std::string_view name = line.substr(0, space);
+    const std::string_view args = space == std::string_view::npos
+                                      ? std::string_view()
+                                      : line.substr(space + 1);
+    for (const detail::WordEntry& entry : detail::WORDS) {
+        if (entry.name != name) {
+            continue;
+        }
+        if (!entry.takes_args && space != std::string_view::npos) {
+            break;
+        }
+        return Command{.word = entry.word, .args = args};
+    }
+    return Command{};
+}
+
+/// The calibration and tare commands, each one driver call (LP-2).
+enum class RequestKind : std::uint8_t {
+    TARE,
+    TARE_PERSIST,
+    CALIBRATE,
+    CALIBRATION_GET,
+    SAVE_DCD,
+    PERIODIC_DCD,
+};
+
+/// A parsed calibration or tare command with its arguments.
+struct CalibrationRequest {
+    RequestKind kind = RequestKind::TARE;
+    Bno085::TareOptions tare;
+    Bno085::CalibrationOptions calibration;
+    bool enable = false;
+};
+
+/// Result of reading a command as a calibration or tare request.
+struct RequestParse {
+    enum class Status : std::uint8_t { NOT_A_REQUEST, MALFORMED, OK };
+    Status status = Status::NOT_A_REQUEST;
+    CalibrationRequest request;
+};
+
+/// Read `command` as a calibration or tare request (LP-2).
+inline RequestParse parse_calibration_request(const Command& command) {
+    using Status = RequestParse::Status;
+    RequestParse parsed;
+    switch (command.word) {
+        case Word::TARE:
+            parsed.request.kind = RequestKind::TARE;
+            if (const auto tare = parse_tare(command.args)) {
+                parsed.request.tare = *tare;
+                parsed.status = Status::OK;
+            } else {
+                parsed.status = Status::MALFORMED;
+            }
+            break;
+        case Word::CAL:
+            parsed.request.kind = RequestKind::CALIBRATE;
+            if (const auto calibration = parse_calibration(command.args)) {
+                parsed.request.calibration = *calibration;
+                parsed.status = Status::OK;
+            } else {
+                parsed.status = Status::MALFORMED;
+            }
+            break;
+        case Word::PDCD:
+            parsed.request.kind = RequestKind::PERIODIC_DCD;
+            if (const auto enable = parse_flag(command.args)) {
+                parsed.request.enable = *enable;
+                parsed.status = Status::OK;
+            } else {
+                parsed.status = Status::MALFORMED;
+            }
+            break;
+        case Word::TAREPERSIST:
+            parsed.request.kind = RequestKind::TARE_PERSIST;
+            parsed.status = Status::OK;
+            break;
+        case Word::CALGET:
+            parsed.request.kind = RequestKind::CALIBRATION_GET;
+            parsed.status = Status::OK;
+            break;
+        case Word::SAVEDCD:
+            parsed.request.kind = RequestKind::SAVE_DCD;
+            parsed.status = Status::OK;
+            break;
+        case Word::UNKNOWN:
+        case Word::BUS:
+        case Word::INFO:
+        case Word::PAYLOAD:
+        case Word::CFG:
+        case Word::OFF:
+        case Word::FLUSH:
+        case Word::RUN:
+        case Word::STAT:
+        case Word::HEAP:
+        case Word::RESET:
+        case Word::CLEARDCD:
+        case Word::TRACE:
+        case Word::BOOT:
+            break;
+    }
+    return parsed;
+}
+
+/// Parameters of the ME calibration command that reads the routines' state:
+/// subcommand 1 in P3 (1000-3625 §6.4.6.2).
+inline constexpr std::array<std::uint8_t, 4> GET_ME_CALIBRATION{0, 0, 0, 1};
+
+/// The calls of the driver that a calibration request makes.
+template <typename Imu>
+concept RequestTarget = requires(Imu& imu, const Bno085::TareOptions& tare,
+                                 const Bno085::CalibrationOptions& calibration,
+                                 std::span<const std::uint8_t> params) {
+    { imu.tare_now(tare) } -> std::same_as<Result<void>>;
+    { imu.persist_tare() } -> std::same_as<Result<void>>;
+    {
+        imu.configure_dynamic_calibration(calibration)
+    } -> std::same_as<Result<void>>;
+    { imu.send_command(std::uint8_t{}, params) } -> std::same_as<Result<void>>;
+    { imu.save_dcd() } -> std::same_as<Result<void>>;
+    { imu.set_periodic_dcd(bool{}) } -> std::same_as<Result<void>>;
+};
+
+/// Make the driver call for a request, with the parameters it carries.
+template <RequestTarget Imu>
+Result<void> send_request(Imu& imu, const CalibrationRequest& request) {
+    switch (request.kind) {
+        case RequestKind::TARE:
+            return imu.tare_now(request.tare);
+        case RequestKind::TARE_PERSIST:
+            return imu.persist_tare();
+        case RequestKind::CALIBRATE:
+            return imu.configure_dynamic_calibration(request.calibration);
+        case RequestKind::CALIBRATION_GET:
+            return imu.send_command(pico_sh2::command::ME_CALIBRATION,
+                                    GET_ME_CALIBRATION);
+        case RequestKind::SAVE_DCD:
+            return imu.save_dcd();
+        case RequestKind::PERIODIC_DCD:
+            return imu.set_periodic_dcd(request.enable);
+    }
+    return Error::INVALID_ARGUMENT;
+}
+
+/// The SH-2 command whose response a request makes the bench print, or zero
+/// for a request the hub does not answer (LP-7).
+constexpr std::uint8_t response_command(RequestKind kind) {
+    switch (kind) {
+        case RequestKind::TARE:
+        case RequestKind::TARE_PERSIST:
+            return pico_sh2::command::TARE;
+        case RequestKind::CALIBRATE:
+        case RequestKind::CALIBRATION_GET:
+            return pico_sh2::command::ME_CALIBRATION;
+        case RequestKind::SAVE_DCD:
+            return pico_sh2::command::SAVE_DCD;
+        case RequestKind::PERIODIC_DCD:
+            return 0;
+    }
+    return 0;
+}
+
+/// The command whose response the host is waiting for (LP-7). Other responses
+/// stay unprinted, so output without a bench command in flight is unchanged.
+class AwaitedResponse {
+   public:
+    /// Wait for the response to `command`; zero waits for none.
+    void expect(std::uint8_t command) { command_ = command; }
+
+    /// Stop waiting: the hub restarted, a bus was selected, or the command did
+    /// not go out.
+    void clear() { command_ = 0; }
+
+    /// A command refused with `error` is not in flight, so its wait is
+    /// dropped; a refusal for `BUSY` leaves the command already in flight.
+    void refused(Error error) {
+        if (error != Error::BUSY) {
+            clear();
+        }
+    }
+
+    /// A restart of the hub (`reset`, `cleardcd`) was asked for. An accepted
+    /// restart drops the response of the command in flight; a refused one
+    /// leaves the wait as `refused` does.
+    void restart(const Result<void>& result) {
+        if (result.ok()) {
+            clear();
+        } else {
+            refused(result.error());
+        }
+    }
+
+    /// Give the session's command-timeout count. A change since the last call
+    /// means the command in flight timed out, so no response will come.
+    void note_timeouts(std::uint32_t total) {
+        if (total != timeouts_) {
+            timeouts_ = total;
+            clear();
+        }
+    }
+
+    /// Give the driver's hub-reset count. A change since the last call means
+    /// the session restarted its command engine, so no response will come.
+    void note_hub_resets(std::uint32_t total) {
+        if (total != hub_resets_) {
+            hub_resets_ = total;
+            clear();
+        }
+    }
+
+    /// True once, for the response being waited for. The session clears the
+    /// unsolicited flag before it delivers a response (pico-sh2
+    /// `CommandResponse`), so the bench cannot test it; the unsolicited
+    /// responses that are known are Initialize, which is never awaited.
+    [[nodiscard]] bool take(const pico_sh2::CommandResponse& response) {
+        if (command_ == 0 || response.command != command_) {
+            return false;
+        }
+        command_ = 0;
+        return true;
+    }
+
+    [[nodiscard]] std::uint8_t pending() const { return command_; }
+
+   private:
+    std::uint8_t command_ = 0;
+    std::uint32_t timeouts_ = 0;
+    std::uint32_t hub_resets_ = 0;
+};
+
+}  // namespace pico_bno085::bench

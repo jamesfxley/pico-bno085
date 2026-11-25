@@ -1,5 +1,9 @@
 extend = "infra/house/config/ruff.toml"
 
-# Registered bench-harness deviation (EN-04.7); see docs/deviations.md.
+# Registered deviations; see docs/deviations.md.
 [lint.extend-per-file-ignores]
 "examples/bench/bench.py" = ["PLR0915"]
+"gui/tests/**" = ["S101"]
+
+[lint.isort]
+known-first-party = ["pico_gui", "pico_gui_bno085"]

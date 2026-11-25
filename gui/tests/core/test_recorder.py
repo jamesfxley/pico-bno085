@@ -49,12 +49,24 @@ def test_an_unwritable_path_is_a_transport_error(tmp_path: Path) -> None:
 
 
 class FailingStream(io.StringIO):
-    """A stream whose write or close fails as a full disk would."""
+    """A stream whose write, flush or close fails as a full disk would."""
 
-    def __init__(self, *, fail_write: bool = False, fail_close: bool = False) -> None:
+    def __init__(
+        self,
+        *,
+        fail_write: bool = False,
+        fail_flush: bool = False,
+        fail_close: bool = False,
+    ) -> None:
         super().__init__()
         self._fail_write = fail_write
+        self._fail_flush = fail_flush
         self._fail_close = fail_close
+
+    def flush(self) -> None:
+        if self._fail_flush:
+            raise OSError("no space left on device")
+        super().flush()
 
     def write(self, text: str, /) -> int:
         if self._fail_write:
@@ -71,6 +83,12 @@ class FailingStream(io.StringIO):
 
 def test_a_failed_write_is_a_transport_error() -> None:
     recorder = Recorder(FailingStream(fail_write=True))
+    with pytest.raises(TransportError, match="no space left on device"):
+        recorder.write("# ready")
+
+
+def test_a_failed_flush_is_a_transport_error() -> None:
+    recorder = Recorder(FailingStream(fail_flush=True))
     with pytest.raises(TransportError, match="no space left on device"):
         recorder.write("# ready")
 

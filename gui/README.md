@@ -54,7 +54,7 @@ port.
 |---|---|
 | `--serial S` | Open the board with serial number `S`. |
 | `--replay FILE` | Replay a recording instead. Exactly one of the two is needed. |
-| `--device-port P` | The board's serial port, if it has several. |
+| `--device-port P` | The board's serial port, if it has several. Not with `--replay`. |
 | `--record FILE` | Write each received line to `FILE`. |
 | `--replay-rate N` | Lines a second of a replay, above zero. The default is 2000. |
 | `--host ADDRESS` | Address to listen on. The default is `127.0.0.1`. |
@@ -80,18 +80,16 @@ session with the reason shown in the status.
 VS Code does not forward the port by itself. Once the server has bound its
 port, the launcher prints these steps. To open the GUI on the host:
 
-1. Run **Forward a Port** from the Command Palette (F1), or use **Forward a
-   Port** in the **Ports** view, and enter the port the launcher names.
-2. Open the localhost address VS Code reports. It may differ from the
-   server's port.
+1. Run **Forward a Port** from the Command Palette (F1) and enter the port
+   the launcher names.
+2. Open `http://localhost:<port>` in the browser. VS Code may report a
+   different local port; if it does, use that one.
 
 A temporary forward lasts for the duration of the VS Code session. VS Code's
 documentation does not describe stopping a forward before the session ends.
 
 The steps follow the Dev Containers documentation
-([forwarding or publishing a port](https://code.visualstudio.com/docs/devcontainers/containers#_forwarding-or-publishing-a-port))
-and the VS Code [port forwarding](https://code.visualstudio.com/docs/debugtest/port-forwarding)
-documentation.
+([forwarding or publishing a port](https://code.visualstudio.com/docs/devcontainers/containers#_forwarding-or-publishing-a-port)).
 
 Press Ctrl+C in the terminal to stop the server. When the port cannot be
 bound, the launcher prints no steps, says so on standard error and exits with

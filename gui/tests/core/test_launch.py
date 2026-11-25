@@ -43,9 +43,10 @@ def test_the_steps_name_the_exact_port_and_the_documented_actions() -> None:
     text = forwarding_steps(9100)
     assert "listening on port 9100" in text
     assert "Command Palette (F1)" in text
-    assert "'Forward a Port' in the Ports view, and enter 9100" in text
-    assert "localhost address that VS Code reports" in text
-    assert "may differ" in text
+    assert "Ports view" not in text
+    assert "'Forward a Port'" in text
+    assert "http://localhost:9100" in text
+    assert "VS Code may report a\n     different local port" in text
     assert "temporary forward lasts for the duration of the VS Code session" in text
     assert "Ctrl+C" in text
 

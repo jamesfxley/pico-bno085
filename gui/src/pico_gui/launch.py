@@ -54,17 +54,17 @@ def add_server_arguments(parser: argparse.ArgumentParser) -> None:
 def forwarding_steps(port: int) -> str:
     """Return the steps that let the Windows browser reach `port`.
 
-    Sources: the Dev Containers documentation, "Forwarding or publishing a
-    port", and the VS Code port forwarding documentation. Neither describes
-    stopping a forward before the VS Code session ends, so the text does not.
+    Source: the Dev Containers documentation, "Forwarding or publishing a
+    port". It does not describe stopping a forward before the VS Code session
+    ends, so the text does not.
     """
     return (
         f"The GUI server is listening on port {port}. To open it in the browser\n"
         f"on the host, forward the port in VS Code:\n"
-        f"  1. Run 'Forward a Port' from the Command Palette (F1), or use\n"
-        f"     'Forward a Port' in the Ports view, and enter {port}.\n"
-        f"  2. Open the localhost address that VS Code reports. It may differ\n"
-        f"     from port {port}.\n"
+        f"  1. Run 'Forward a Port' from the Command Palette (F1) and enter\n"
+        f"     {port}.\n"
+        f"  2. Open http://localhost:{port} in the browser. VS Code may report a\n"
+        f"     different local port; if it does, use that one.\n"
         f"A temporary forward lasts for the duration of the VS Code session.\n"
         f"Press Ctrl+C here to stop the server."
     )
@@ -146,7 +146,6 @@ def run(
             )
     except SystemExit:
         if not nicegui_server.Server.instance.started:
-            on_shutdown()
             print(bind_failure_message(server), file=sys.stderr, flush=True)
         raise
     print(shutdown_message(), flush=True)

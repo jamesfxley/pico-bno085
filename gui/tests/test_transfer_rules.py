@@ -98,22 +98,31 @@ def test_rule_1_a_device_package_imports_the_core_and_itself_only() -> None:
 START = r"(?:^|[\s\"'`(=\[,])"
 # A path that is outside `gui/` wherever the file sits: absolute, in a home
 # directory, on a Windows drive, or a sibling of `gui/` in the repository.
+ROOT_DIRECTORIES = (
+    "home|workspaces|tmp|dev|proc|sys|usr|etc|var|opt|mnt|root|bin|sbin|lib|run|srv"
+    "|media"
+)
+# A sibling directory counts only when a file or a deeper directory follows, so
+# that prose such as "include/exclude" or "build/" does not match.
+SIBLING_DIRECTORIES = r"(?:infra|examples|cmake|docs|include|\.github|build[\w\-]*)"
 OUTSIDE_PATH = re.compile(
     START
-    + r"""(?:
-        /[A-Za-z_.][\w.\-]*                          # absolute path
+    + rf"""(?:
+        /(?:{ROOT_DIRECTORIES})(?![\w.\-])           # absolute path, known root
         | ~[/\\]                                     # home directory
         | \$HOME\b | %USERPROFILE%                   # home directory variable
         | [A-Za-z]:\\                                # Windows drive
-        | (?:infra|examples|cmake|docs|include|\.github|build[\w\-]*)/
+        | {SIBLING_DIRECTORIES}/[\w\-]+(?:/|\.\w)     # sibling directory, deeper
         | src/pico_bno085\b
-        | tests/(?:driver|bench|gui)\b
+        | tests/(?:driver|bench|gui)/
         | (?:CMakeLists\.txt|pico\.toml|house\.toml|dev\.py)\b
     )""",
     re.VERBOSE,
 )
 PARENT_TOKEN = re.compile(r"[^\s\"'`()=\[\],]*\.\.[/\\][^\s\"'`()=\[\],]*")
 PARENTS_INDEX = re.compile(r"\.parents\[(\d+)\]")
+PARENT_CHAIN = re.compile(r"(?:\.parent(?!\w))+")
+CWD_PARENT = re.compile(r"cwd\(\)\.parent(?!\w)")
 # `ruff.toml` names the House configuration it extends. The path changes when
 # `gui/` moves, so this one line of this one file is allowed.
 ALLOWED_OUTSIDE = {("ruff.toml", 'extend = "../infra/house/config/ruff.toml"')}
@@ -124,6 +133,14 @@ def climbs_out(relative: str, token: str) -> bool:
     here = posixpath.dirname(relative)
     resolved = posixpath.normpath(posixpath.join(here, token.replace("\\", "/")))
     return resolved == ".." or resolved.startswith("../")
+
+
+def parent_chain_leaves(line: str, depth: int) -> bool:
+    """Say whether a `.parent.parent...` chain on `__file__` leaves `gui/`.
+
+    The first `.parent` is the file's directory; `depth` of them reach `gui/`.
+    """
+    return any(chain.count(".parent") > depth for chain in PARENT_CHAIN.findall(line))
 
 
 def outside_references(relative: str, text: str) -> list[str]:
@@ -141,6 +158,8 @@ def outside_references(relative: str, text: str) -> list[str]:
             OUTSIDE_PATH.search(line)
             or any(climbs_out(relative, t) for t in PARENT_TOKEN.findall(line))
             or any(int(n) >= depth for n in PARENTS_INDEX.findall(line))
+            or CWD_PARENT.search(line)
+            or ("__file__" in line and parent_chain_leaves(line, depth))
         ):
             found.append(line)
     return found
@@ -165,6 +184,13 @@ def outside_references(relative: str, text: str) -> list[str]:
         "see src/pico_bno085/driver.cpp",
         "run dev.py check",
         "Path(__file__).parents[3]",
+        "open('/tmp/x')",
+        "see /home",
+        "see build/output/log.txt",
+        "see docs/index.md",
+        "uses tests/gui/helper",
+        "Path.cwd().parent / 'infra'",
+        "root = Path.cwd().parent",
     ],
 )
 def test_rule_2_the_checker_finds_a_path_outside(line: str) -> None:
@@ -181,6 +207,21 @@ def test_rule_2_a_parent_path_is_resolved_from_the_file() -> None:
 @pytest.mark.parametrize(
     ("relative", "line"),
     [
+        ("tests/x.py", "Path(__file__).parent.parent.parent"),
+        ("tests/core/x.py", "Path(__file__).resolve().parent.parent.parent.parent"),
+        ("x.py", "Path(__file__).parent.parent"),
+    ],
+)
+def test_rule_2_a_parent_chain_is_resolved_from_the_file(
+    relative: str,
+    line: str,
+) -> None:
+    assert outside_references(relative, line)
+
+
+@pytest.mark.parametrize(
+    ("relative", "line"),
+    [
         ("tests/core/x.py", '"../data/session.txt"'),
         ("tests/core/x.py", '"../../src/pico_gui"'),
         ("tests/core/x.py", "Path(__file__).parents[2]"),
@@ -191,6 +232,18 @@ def test_rule_2_a_parent_path_is_resolved_from_the_file() -> None:
         ("x.md", "a/b"),
         ("x.md", "and/or"),
         ("x.md", "forward port 8080"),
+        ("src/pico_gui/x.py", 'ui.page("/monitor")'),
+        ("x.py", 'url = "/api/state"'),
+        ("x.py", 'fetch("/_nicegui/x")'),
+        ("x.md", "the page `/status` shows it"),
+        ("x.md", "rate in samples /s"),
+        ("x.md", "include/exclude lists"),
+        ("x.md", "the docs/ and src/ split"),
+        ("x.md", "see build/ output"),
+        ("x.md", "and tests/gui helpers"),
+        ("tests/core/x.py", "Path(__file__).resolve().parent.parent.parent"),
+        ("tests/core/x.py", "Path(__file__).parent"),
+        ("tests/x.py", "tmp_path.parent.parent.parent"),
     ],
 )
 def test_rule_2_the_checker_accepts_paths_inside(relative: str, line: str) -> None:
@@ -255,6 +308,7 @@ DEVICE_ACCESS = {
     "usb",
     "hid",
     "subprocess",
+    "multiprocessing",
     "ctypes",
     "socket",
     "termios",
@@ -262,6 +316,23 @@ DEVICE_ACCESS = {
     "fcntl",
     "importlib",
     "__import__",
+    "builtins.__import__",
+    "os.system",
+    "os.popen",
+    "http.client",
+    "urllib.request",
+    # Not the whole of `asyncio`, which NiceGUI code uses for timers and tasks:
+    # only the calls that open a connection or start a process.
+    "asyncio.open_connection",
+    "asyncio.open_unix_connection",
+    "asyncio.create_subprocess_exec",
+    "asyncio.create_subprocess_shell",
+}
+# Methods of an event loop that open a connection, whatever the loop is called.
+LOOP_CONNECTION_CALLS = {
+    "create_connection": "asyncio.create_connection",
+    "create_unix_connection": "asyncio.create_unix_connection",
+    "create_datagram_endpoint": "asyncio.create_datagram_endpoint",
 }
 ALLOWED_ACCESS = {
     "device.py": {"pico_tooling"},
@@ -270,18 +341,66 @@ ALLOWED_ACCESS = {
 }
 
 
+def dotted_name(node: ast.expr, aliases: dict[str, str]) -> str | None:
+    """Return the dotted name of a name or attribute chain, aliases resolved."""
+    parts: list[str] = []
+    while isinstance(node, ast.Attribute):
+        parts.append(node.attr)
+        node = node.value
+    if not isinstance(node, ast.Name):
+        return None
+    parts.append(aliases.get(node.id, node.id))
+    return ".".join(reversed(parts))
+
+
+def candidate_names(source: str) -> set[str]:
+    """Return the dotted names that `source` imports or calls."""
+    tree = ast.parse(source)
+    aliases: dict[str, str] = {}
+    names: set[str] = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            for alias in node.names:
+                names.add(alias.name)
+                aliases[alias.asname or alias.name.split(".")[0]] = (
+                    alias.name if alias.asname else alias.name.split(".")[0]
+                )
+        elif isinstance(node, ast.ImportFrom) and node.module and not node.level:
+            names.add(node.module)
+            for alias in node.names:
+                aliases[alias.asname or alias.name] = f"{node.module}.{alias.name}"
+                names.add(f"{node.module}.{alias.name}")
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Call):
+            called = dotted_name(node.func, aliases)
+            if called is not None:
+                names.add(called)
+            if (
+                isinstance(node.func, ast.Attribute)
+                and node.func.attr in LOOP_CONNECTION_CALLS
+                and not (called or "").startswith("socket.")
+            ):
+                names.add(LOOP_CONNECTION_CALLS[node.func.attr])
+    return names
+
+
 def device_access(source: str) -> set[str]:
     """Return the device-access names that `source` imports or calls.
 
-    A call of `__import__` counts as a dynamic import of any module.
+    A name matches when it equals a listed name or lies below it, so
+    `http.client.HTTPConnection` matches `http.client`. A call of `__import__`
+    counts as a dynamic import of any module.
     """
-    tree = ast.parse(source)
-    calls = {
-        node.func.id
-        for node in ast.walk(tree)
-        if isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
+    return {
+        listed
+        for listed in DEVICE_ACCESS
+        for name in candidate_names(source)
+        if name == listed or name.startswith(listed + ".")
+    } | {
+        listed
+        for listed in LOOP_CONNECTION_CALLS.values()
+        if listed in candidate_names(source)
     }
-    return (top_level(imported_modules(source)) | calls) & DEVICE_ACCESS
 
 
 @pytest.mark.parametrize(
@@ -297,6 +416,38 @@ def device_access(source: str) -> set[str]:
         ("import importlib", {"importlib"}),
         ("from importlib import import_module", {"importlib"}),
         ("module = __import__('pico_tooling')", {"__import__"}),
+        ("import usb.core", {"usb"}),
+        ("import hid", {"hid"}),
+        ("import ctypes", {"ctypes"}),
+        ("import fcntl", {"fcntl"}),
+        ("import multiprocessing", {"multiprocessing"}),
+        ("from multiprocessing import Process", {"multiprocessing"}),
+        ("import http.client", {"http.client"}),
+        ("import urllib.request", {"urllib.request"}),
+        ("from urllib import request\nrequest.urlopen(u)", {"urllib.request"}),
+        ("import os\nos.system('x')", {"os.system"}),
+        ("import os\nos.popen('x')", {"os.popen"}),
+        ("from os import system", {"os.system"}),
+        ("import builtins\nbuiltins.__import__('serial')", {"builtins.__import__"}),
+        (
+            "import asyncio\nasync def f():\n    await asyncio.open_connection(h, p)",
+            {"asyncio.open_connection"},
+        ),
+        (
+            "import asyncio as aio\naio.open_connection(h, p)",
+            {"asyncio.open_connection"},
+        ),
+        ("from asyncio import open_connection", {"asyncio.open_connection"}),
+        (
+            "import asyncio\nasyncio.create_subprocess_exec('x')",
+            {"asyncio.create_subprocess_exec"},
+        ),
+        (
+            "import asyncio\nasyncio.get_running_loop().create_connection(f, h)",
+            {"asyncio.create_connection"},
+        ),
+        ("import asyncio\nloop.call_later(1, f)\nasyncio.sleep(1)", set()),
+        ("import socket\nsocket.create_connection(a)", {"socket"}),
         ("import os, json", set()),
     ],
 )

@@ -12,9 +12,10 @@ from pico_gui_bno085.protocol import (
     Telemetry,
 )
 
-# LP-3: `# ready` is printed each time the session reaches READY. LP-4: events
-# print only between `run` and its `# done`, so a jump in a sensor's sequence
-# across two runs is not a loss.
+# LP-3: `# ready` is printed each time the session reaches READY. LP-4 does not
+# say that the hub's sequence counter continues across runs, so this model
+# restarts its tracking at each `# run` and does not count a jump across two
+# runs as a loss.
 RESTART_WORDS = frozenset({"ready", "run"})
 DEFAULT_CAPACITY = 2048
 DEFAULT_WINDOW_SECONDS = 1.0

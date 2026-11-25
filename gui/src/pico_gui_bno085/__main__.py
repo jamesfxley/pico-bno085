@@ -76,7 +76,10 @@ def refuse(error: TransportError) -> int:
 
 def main(argv: Sequence[str] | None = None) -> int:
     """Run the launcher and return its exit status."""
-    args = parser().parse_args(argv)
+    command = parser()
+    args = command.parse_args(argv)
+    if args.replay is not None and args.device_port is not None:
+        command.error("--device-port applies to --serial, not to --replay")
     try:
         label, transport = open_source(args)
     except TransportError as error:

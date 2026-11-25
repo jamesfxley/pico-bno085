@@ -1,1 +1,3 @@
-`session.txt` is the output of a bench session on a Pico 2 W with a BNO085, using the LP-5 payload lines.
+`session.txt` is assembled for the tests in the bench line format (LP-3 to
+LP-7). It is not one recorded session and does not come from a board or a
+capture. Its `# done` counts do not match the lines present.

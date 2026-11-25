@@ -309,8 +309,15 @@ def test_lp7_a_malformed_response_is_refused(text: str, message: str) -> None:
 
 
 def padded_response(word: str, length: int) -> str:
-    """Return a well-formed `# dcd` line of `length` characters, by padding a key."""
-    base = f"# {word} status=0"
+    """Return a well-formed response of `length` characters, by padding a number."""
+    bases = {
+        "dcd": "# dcd status=0",
+        "cal": "# cal status=0 accel=1 gyro=0 mag=1 planar=0 table=0",
+        "resp": "# resp cmd=0c seq=4 rseq=1 r=0001020304050607080a0b",
+    }
+    base = bases[word]
+    if word == "resp":
+        return base.replace("seq=4", "seq=" + "0" * (length - len(base)) + "4", 1)
     return base + "0" * (length - len(base))
 
 
@@ -318,6 +325,23 @@ def test_lp1_a_command_response_of_127_characters_is_accepted() -> None:
     text = padded_response("dcd", 127)
     assert len(text) == 127
     assert parse_line(text) == SaveDcdStatus(0)
+
+
+@pytest.mark.parametrize("word", ["cal", "resp"])
+def test_lp1_a_calibration_or_raw_response_of_127_characters_is_accepted(
+    word: str,
+) -> None:
+    text = padded_response(word, 127)
+    assert len(text) == 127
+    assert parse_line(text)
+
+
+@pytest.mark.parametrize("word", ["dcd", "cal", "resp"])
+def test_lp1_a_response_of_128_characters_is_refused(word: str) -> None:
+    text = padded_response(word, 128)
+    assert len(text) == 128
+    with pytest.raises(ProtocolError, match=r"longer than 127 characters \(LP-1\)"):
+        parse_line(text)
 
 
 @pytest.mark.parametrize(

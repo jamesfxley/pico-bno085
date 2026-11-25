@@ -69,8 +69,8 @@ standard error.
 timestamps, and flushes each line. The lines are as the framer returns them: an
 empty line is absent, an overlong line is absent, a CR LF pair is one line feed
 and a byte outside ASCII is written as `?`. A recording needs no conversion to
-serve as a replay or a test fixture. The files in `tests/data` are recordings;
-`tests/data/README.md` records where each came from.
+serve as a replay or a test fixture. `tests/data/README.md` records where each
+file in `tests/data` came from.
 
 A recording that cannot be written, for instance on a full disk, ends the
 session with the reason shown in the status.

@@ -1,0 +1,33 @@
+[build-system]
+requires = ["uv_build==0.11.28"]
+build-backend = "uv_build"
+
+[project]
+name = "pico-bno085-gui"
+version = "0.0.0"
+description = "Browser GUI for the BNO085 bench line protocol."
+requires-python = ">=3.11"
+dependencies = ["nicegui==3.18.0"]
+
+[dependency-groups]
+dev = ["pytest==9.2.0", "mypy==2.4.1"]
+
+[tool.uv]
+default-groups = ["dev"]
+
+[tool.uv.build-backend]
+module-name = ["pico_gui", "pico_gui_bno085"]
+
+[tool.pytest]
+strict = true
+testpaths = ["tests"]
+addopts = ["-ra"]
+filterwarnings = ["error"]
+
+[tool.mypy]
+python_version = "3.11"
+strict = true
+warn_unreachable = true
+enable_error_code = ["ignore-without-code"]
+mypy_path = "stubs"
+files = ["src", "tests"]

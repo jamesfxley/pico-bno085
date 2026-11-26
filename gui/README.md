@@ -121,23 +121,34 @@ disabled and the line under the header says why.
 
 ## The panels
 
+The page has two columns. The live column, on the left, holds the
+connection bar, the command-path line with Retry, the two status lines, the
+board orientation view beside the Euler readouts, and the three motion plots
+in one row below them; it never changes with the controls. The controls sit
+in one tab panel on the right, one tab visible at a time: Sensors (the
+default), Health, Calibration, and Recording and Replay when the launcher
+gave `--record-dir` or `--replay`. In a window narrower than Quasar's
+medium breakpoint (1024 px) the tab panel falls below the live column, and
+the plots and the orientation view wrap onto separate lines when a row is
+too narrow for them. The layout uses NiceGUI's own elements and Quasar
+classes only.
+
 The connection bar names the source and shows the session state, its line
 count and any line dropped for being too long. The line under the header
 shows the command path: the phase, the reply being waited for, the queue
 depth and the last refusal, timeout or restart.
 
-The sensors table lists each sensor that has reported, with the state the
-session commanded, the commanded rate beside the delivered rate, the sample
-count of the window and the latest accuracy as its LP-4 name. The G line
-shows no accuracy, because its report carries a placeholder
-(1000-3625 §6.5.44.2). Below the table, the sensor select offers the
-thirteen sensors of the LP-8 table with their maximum rates, naming the two
-rates the specification marks unconfirmed; the interval input takes the
-report interval in microseconds and Enable sends
-`cfg <id_hex> <us>`, Disable sends `off <id_hex>`. An interval of zero is
-refused: a report interval of zero turns the sensor off (1000-3625 §5.4.1),
-which `cfg` would do while the bench keeps the sensor's desired entry, so
-the panel disables with `off`.
+The Sensors tab shows a table that lists each sensor that has reported, with the
+state the session commanded, the commanded rate beside the delivered rate, the
+sample count of the window and the latest accuracy as its LP-4 name. The G line
+shows no accuracy, because its report carries a placeholder (1000-3625
+§6.5.44.2). Below the table, the sensor select offers the thirteen sensors of
+the LP-8 table with their maximum rates, naming the two rates the specification
+marks unconfirmed; the interval input takes the report interval in microseconds
+and Enable sends `cfg <id_hex> <us>`, Disable sends `off <id_hex>`. An interval
+of zero is refused: a report interval of zero turns the sensor off (1000-3625
+§5.4.1), which `cfg` would do while the bench keeps the sensor's desired entry,
+so the panel disables with `off`.
 
 The board orientation panel shows a board turning in a three-dimensional
 view, built from the same stream and sending no command of its own. The
@@ -188,18 +199,19 @@ readouts and the tables follow the page refresh, at most 30 times a second; a
 table, the board's rotation and every text are sent to the browser only when
 their content changed since the last refresh.
 
-The stream health table shows, per sensor over a rolling two-second window of
-event time: the delivered rate, the missing and the repeated report counts, the
-timestamp inversions, the worst backward step, the clock faults and the
-99th-percentile jitter as a fraction of the nominal interval. The rate comes
-from the event times the lines carry, so a burst of lines in one USB chunk
-leaves it unchanged. The nominal interval is the commanded one when this session
-sent `cfg` for that sensor, and otherwise the median observed interval; the
-table's last column states which basis was used. The G line's sequence is a
-placeholder, so it is left out of the gap counts, and nothing is compared across
-a `# ready` or `# run` boundary, where the hub's counters may have reset.
+The Health tab shows the stream health table: per sensor over a rolling
+two-second window of event time: the delivered rate, the missing and the
+repeated report counts, the timestamp inversions, the worst backward step, the
+clock faults and the 99th-percentile jitter as a fraction of the nominal
+interval. The rate comes from the event times the lines carry, so a burst of
+lines in one USB chunk leaves it unchanged. The nominal interval is the
+commanded one when this session sent `cfg` for that sensor, and otherwise the
+median observed interval; the table's last column states which basis was used.
+The G line's sequence is a placeholder, so it is left out of the gap counts, and
+nothing is compared across a `# ready` or `# run` boundary, where the hub's
+counters may have reset.
 
-The accuracy and calibration panel shows the last `# cal` response decoded
+The Calibration tab shows the last `# cal` response decoded
 per LP-7, with the status and each routine's state, and the last command
 response line as it was received. The tare controls take the axes, 7 for
 X, Y and Z or 4 for Z alone, and the basis, the rotation vector the tare is
@@ -219,7 +231,7 @@ deliver at once, and `tarepersist`, `savedcd`, `pdcd`, `cleardcd`, `reset`,
 `boot` and `trace`, which write the hub's flash or disrupt the session. The
 panels leave all of them to a terminal on the bench.
 
-The recording panel appears when the launcher was given `--record-dir`. Start
+The Recording tab appears when the launcher was given `--record-dir`. Start
 opens a file whose name is generated from the time, so no name is typed into the
 browser, and shows the file being written; while a recording runs, Start is
 disabled and a direct call to it refuses with the panel's message. Stop closes
@@ -227,7 +239,7 @@ it and waits for a write in progress, so a stalled disk delays it. A recording
 that cannot be written, for instance on a full disk, is noted in the panel and
 the session keeps reading.
 
-The replay panel appears for `--replay`. It shows the fraction of the recording
+The Replay tab appears for `--replay`. It shows the fraction of the recording
 the pass has read, Hold pauses the pass where it stands, Resume continues it,
 and Restart stops the pass and reads the recording again into a fresh model;
 until new samples arrive the charts and the board keep their last drawing,

@@ -522,71 +522,91 @@ class Page:
         self._health_rows: list[dict[str, str | int]] | None = None
         apply_theme()
         self.bar = ConnectionBar(sources.label)
-        with ui.row().classes("items-center"):
-            self.controller = ui.label()
-            if sources.commands is not None:
-                self.retry = ui.button(
-                    "Retry connect",
-                    on_click=self._retry_clicked,
-                ).mark("retry")
-                self.retry.disable()
-        self._build_sensors()
-        self._build_orientation()
-        self._build_euler()
-        self._build_health()
-        self._build_motion()
-        self._build_calibration()
-        if sources.recording is not None:
-            self._build_recording()
-        if sources.replay is not None:
-            self._build_replay()
-        self.line = StatusLine()
-        self.note = StatusLine()
+        with ui.row().classes("w-full items-start"):
+            with ui.column().classes("col-12 col-md"):
+                with ui.row().classes("items-center"):
+                    self.controller = ui.label()
+                    if sources.commands is not None:
+                        self.retry = ui.button(
+                            "Retry connect",
+                            on_click=self._retry_clicked,
+                        ).mark("retry")
+                        self.retry.disable()
+                self.line = StatusLine()
+                self.note = StatusLine()
+                with ui.row().classes("w-full items-stretch"):
+                    self._build_orientation()
+                    self._build_euler()
+                self._build_motion()
+            self._build_tabs()
         if sources.commands is None:
             self.controller.set_text(NO_BOARD)
         ui.timer(REFRESH_INTERVAL_SECONDS, self.refresh)
 
+    def _build_tabs(self) -> None:
+        """Build the tab panel of controls, one group visible at a time.
+
+        Sensors is the default because enabling a sensor is the first thing
+        a bench session needs: nothing else shows data until one reports.
+        The stream health table and the calibration controls follow; Recording
+        and Replay appear only with their sources.
+        """
+        groups: list[tuple[str, str, Callable[[], None]]] = [
+            ("Sensors", "sensors", self._build_sensors),
+            ("Health", "health", self._build_health),
+            ("Calibration", "calibration", self._build_calibration),
+        ]
+        if self._sources.recording is not None:
+            groups.append(("Recording", "recording", self._build_recording))
+        if self._sources.replay is not None:
+            groups.append(("Replay", "replay", self._build_replay))
+        with ui.column().classes("col-12 col-md-4"):
+            with ui.tabs().classes("w-full") as tabs:
+                for label, name, _ in groups:
+                    ui.tab(name, label).mark(f"tab-{name}")
+            with ui.tab_panels(tabs, value="sensors").classes("w-full"):
+                for _, name, build in groups:
+                    with ui.tab_panel(name):
+                        build()
+
     def _build_sensors(self) -> None:
         """Build the sensors table and the controls that enable a sensor."""
-        with ui.card().classes("w-full"):
-            ui.label("Sensors").classes("text-lg")
-            self.sensors = ui.table(
-                columns=_SENSOR_COLUMNS,
-                rows=[],
-                row_key="sensor",
-            ).classes("w-full")
-            with ui.row():
-                self.sensor_choice = ui.select(
-                    options=sensor_options(),
-                    value=0x01,
-                    label="sensor",
-                )
-                self.interval = ui.number(
-                    label="report interval (µs)",
-                    value=_DEFAULT_INTERVAL_US,
-                )
-                self.enable = self._board_control(
-                    "Enable",
-                    self._enable_clicked,
-                ).mark("enable")
-                self.disable = self._board_control(
-                    "Disable",
-                    self._disable_clicked,
-                ).mark("disable")
+        self.sensors = ui.table(
+            columns=_SENSOR_COLUMNS,
+            rows=[],
+            row_key="sensor",
+        ).classes("w-full")
+        with ui.row():
+            self.sensor_choice = ui.select(
+                options=sensor_options(),
+                value=0x01,
+                label="sensor",
+            )
+            self.interval = ui.number(
+                label="report interval (µs)",
+                value=_DEFAULT_INTERVAL_US,
+            )
+            self.enable = self._board_control(
+                "Enable",
+                self._enable_clicked,
+            ).mark("enable")
+            self.disable = self._board_control(
+                "Disable",
+                self._disable_clicked,
+            ).mark("disable")
 
     def _build_health(self) -> None:
         """Build the stream health table."""
-        with ui.card().classes("w-full"):
-            ui.label("Stream health").classes("text-lg")
-            self.health = ui.table(
-                columns=HEALTH_COLUMNS,
-                rows=[],
-                row_key="sensor",
-            ).classes("w-full")
+        ui.label("Stream health").classes("text-lg")
+        self.health = ui.table(
+            columns=HEALTH_COLUMNS,
+            rows=[],
+            row_key="sensor",
+        ).classes("w-full")
 
     def _build_orientation(self) -> None:
         """Build the board view, its source select and the lines beside it."""
-        with ui.card().classes("w-full"):
+        with ui.card().classes("col"):
             ui.label("Board orientation").classes("text-lg")
             with ui.row().classes("items-center"):
                 self.rotation_choice = ui.select(
@@ -625,89 +645,88 @@ class Page:
 
     def _build_euler(self) -> None:
         """Build the Euler readouts of the selected rotation source."""
-        with ui.card().classes("w-full"):
+        with ui.card().classes("col"):
             ui.label("Euler angles").classes("text-lg")
             self.euler = ui.label()
             self.convention = ui.label().classes("text-sm text-grey")
 
     def _build_motion(self) -> None:
-        """Build one plot card per plotted vector sensor."""
+        """Build one plot card per plotted vector sensor, in one row."""
         self.motion: dict[int, ui.echart] = {}
         self.motion_notes: dict[int, ui.label] = {}
-        for sensor, spec in MOTION_PLOTS.items():
-            with ui.card().classes("w-full"):
-                ui.label(f"{spec.label} (0x{sensor:02X})").classes("text-lg")
-                self.motion_notes[sensor] = ui.label().classes("text-sm text-grey")
-                self.motion[sensor] = ui.echart(
-                    options=motion_options(sensor, None),
-                )
+        with ui.row().classes("w-full items-stretch"):
+            for sensor, spec in MOTION_PLOTS.items():
+                with ui.card().classes("col").style("min-width: 14rem"):
+                    ui.label(f"{spec.label} (0x{sensor:02X})").classes("text-lg")
+                    self.motion_notes[sensor] = ui.label().classes(
+                        "text-sm text-grey",
+                    )
+                    self.motion[sensor] = ui.echart(
+                        options=motion_options(sensor, None),
+                    )
 
     def _build_calibration(self) -> None:
         """Build the calibration state and the tare and calibrate controls."""
-        with ui.card().classes("w-full"):
-            ui.label("Accuracy and calibration").classes("text-lg")
-            self.calibration = ui.label()
-            self.response = ui.label().classes("text-sm text-grey")
-            with ui.row():
-                self.axes = ui.select(
-                    options=dict(TARE_AXES_NAMES),
-                    value=0x7,
-                    label="tare axes",
-                )
-                self.basis = ui.select(
-                    options=dict(TARE_BASIS_NAMES),
-                    value=0,
-                    label="tare basis",
-                )
-                self.tare = self._board_control(
-                    "Tare",
-                    self._tare_clicked,
-                ).mark("tare")
-            with ui.row():
-                self.accel = ui.switch("accelerometer", value=True).mark("accel")
-                self.gyro = ui.switch("gyroscope", value=True).mark("gyro")
-                self.mag = ui.switch("magnetometer", value=True).mark("mag")
-                self.calibrate = self._board_control(
-                    "Calibrate",
-                    self._calibrate_clicked,
-                ).mark("calibrate")
-                self.calget = self._board_control(
-                    "Read calibration state",
-                    self._calget_clicked,
-                ).mark("calget")
-            ui.label(
-                "Calibrate also turns the planar-accelerometer and on-table "
-                "routines off.",
-            ).classes("text-sm text-grey")
+        ui.label("Accuracy and calibration").classes("text-lg")
+        self.calibration = ui.label()
+        self.response = ui.label().classes("text-sm text-grey")
+        with ui.row():
+            self.axes = ui.select(
+                options=dict(TARE_AXES_NAMES),
+                value=0x7,
+                label="tare axes",
+            )
+            self.basis = ui.select(
+                options=dict(TARE_BASIS_NAMES),
+                value=0,
+                label="tare basis",
+            )
+            self.tare = self._board_control(
+                "Tare",
+                self._tare_clicked,
+            ).mark("tare")
+        with ui.row():
+            self.accel = ui.switch("accelerometer", value=True).mark("accel")
+            self.gyro = ui.switch("gyroscope", value=True).mark("gyro")
+            self.mag = ui.switch("magnetometer", value=True).mark("mag")
+            self.calibrate = self._board_control(
+                "Calibrate",
+                self._calibrate_clicked,
+            ).mark("calibrate")
+            self.calget = self._board_control(
+                "Read calibration state",
+                self._calget_clicked,
+            ).mark("calget")
+        ui.label(
+            "Calibrate also turns the planar-accelerometer and on-table routines off.",
+        ).classes("text-sm text-grey")
 
     def _build_recording(self) -> None:
         """Build the record button and its state line."""
-        with ui.card().classes("w-full"):
-            ui.label("Recording").classes("text-lg")
-            self.recording_state = ui.label()
-            with ui.row():
-                self.record_start = self._any_control(
-                    "Start",
-                    self._record_start_clicked,
-                ).mark("record-start")
-                self.record_stop = self._any_control(
-                    "Stop",
-                    self._record_stop_clicked,
-                ).mark("record-stop")
+        ui.label("Recording").classes("text-lg")
+        self.recording_state = ui.label()
+        with ui.row():
+            self.record_start = self._any_control(
+                "Start",
+                self._record_start_clicked,
+            ).mark("record-start")
+            self.record_stop = self._any_control(
+                "Stop",
+                self._record_stop_clicked,
+            ).mark("record-stop")
 
     def _build_replay(self) -> None:
         """Build the replay progress and its hold and restart controls."""
-        with ui.card().classes("w-full"):
-            ui.label("Replay").classes("text-lg")
-            self.progress = ui.label()
-            with ui.row():
-                self.hold = self._any_control("Hold", self._hold_clicked).mark(
-                    "hold",
-                )
-                self.restart = self._any_control(
-                    "Restart",
-                    self._restart_clicked,
-                ).mark("restart")
+        ui.label("Replay").classes("text-lg")
+        self.progress = ui.label()
+        with ui.row():
+            self.hold = self._any_control("Hold", self._hold_clicked).mark(
+                "hold",
+            )
+            self.restart = self._any_control(
+                "Restart",
+                self._restart_clicked,
+            ).mark("restart")
 
     def refresh(self) -> None:
         """Read the sources and update every widget; nothing here raises."""

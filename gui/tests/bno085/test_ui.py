@@ -744,3 +744,218 @@ async def test_a_table_is_sent_only_when_its_rows_changed(
     monitor.on_line("V,1,1,1002000,2,0.10000,-0.20000,9.80000", 0.0)
     page.refresh()
     assert sent == ["sensors", "health"]
+
+
+def inside(element: ui.element, container: ui.element) -> bool:
+    """Return whether `element` is `container` or one of its descendants."""
+    current: ui.element | None = element
+    while current is not None:
+        if current is container:
+            return True
+        current = current.parent_slot.parent if current.parent_slot else None
+    return False
+
+
+def parent_row(element: ui.element) -> ui.element:
+    """Return the parent of the card around `element`."""
+    card = card_of(element)
+    assert card.parent_slot is not None
+    return card.parent_slot.parent
+
+
+def card_of(element: ui.element) -> ui.card:
+    """Return the card around `element`."""
+    current = element
+    while not isinstance(current, ui.card):
+        assert current.parent_slot is not None
+        current = current.parent_slot.parent
+    return current
+
+
+def column_of(element: ui.element) -> ui.column:
+    """Return the nearest column around `element`, excluding itself."""
+    assert element.parent_slot is not None
+    current = element.parent_slot.parent
+    while not isinstance(current, ui.column):
+        assert current.parent_slot is not None
+        current = current.parent_slot.parent
+    return current
+
+
+def tab_panel_of(user: User, element: ui.element) -> str | None:
+    """Return the name of the tab panel that holds `element`, if any."""
+    for panel_element in user.find(kind=ui.tab_panel).elements:
+        if inside(element, panel_element):
+            return str(panel_element.props["name"])
+    return None
+
+
+def tab_names(user: User) -> list[str]:
+    """Return the names of the page's tabs, in order."""
+    tabs = sorted(user.find(kind=ui.tab).elements, key=lambda tab: tab.id)
+    return [str(tab.props["name"]) for tab in tabs]
+
+
+def board_sources(
+    replay: bool,
+    recording: bool,
+    board: bool = True,
+) -> Sources:
+    """Return sources with a board, a replay and a recording, as asked."""
+    monitor = replayed()
+    return Sources(
+        label="board EXAMPLE-SERIAL",
+        status=lambda: Status(State.CONNECTED),
+        snapshot=monitor.snapshot,
+        history=monitor.history,
+        tick=lambda: None,
+        commands=FakeCommands().surface() if board else None,
+        replay=FakeReplay().surface() if replay else None,
+        recording=FakeRecording().surface() if recording else None,
+    )
+
+
+async def test_the_live_views_stay_outside_the_tabs(user: User) -> None:
+    page = await open_page(user, board_sources(replay=True, recording=True))
+    (panels,) = user.find(kind=ui.tab_panels).elements
+    live: list[ui.element] = [
+        page.controller,
+        page.retry,
+        page.rotation_choice,
+        page.euler,
+        *page.motion.values(),
+    ]
+    for element in live:
+        assert not inside(element, panels)
+    # The board view and the Euler readouts share a row; the plots share
+    # another, one card each.
+    assert parent_row(page.rotation_choice) is parent_row(page.euler)
+    plots = [parent_row(chart) for chart in page.motion.values()]
+    assert plots[0] is plots[1] is plots[2]
+    assert plots[0] is not parent_row(page.euler)
+    # The orientation card keeps room for the fixed-width scene, so its row
+    # wraps rather than overlapping the Euler card.
+    (scene,) = user.find(kind=ui.scene).elements
+    width = card_of(scene).style["min-width"]
+    assert width.startswith(f"calc({scene.props['width']}px + ")
+
+
+async def test_the_live_column_leads_the_tab_column(user: User) -> None:
+    page = await open_page(user, board_sources(replay=True, recording=True))
+    (panels,) = user.find(kind=ui.tab_panels).elements
+    live = column_of(page.controller)
+    tabs = column_of(panels)
+    assert live.parent_slot is not None
+    assert tabs.parent_slot is not None
+    assert live.parent_slot is tabs.parent_slot
+    children = live.parent_slot.children
+    assert children.index(live) < children.index(tabs)
+    assert {"col-12", "col-md"} <= set(live.classes)
+    assert {"col-12", "col-md-4"} <= set(tabs.classes)
+
+
+async def test_no_tab_repeats_its_name_as_a_heading(user: User) -> None:
+    await open_page(user, board_sources(replay=True, recording=True))
+    (panels,) = user.find(kind=ui.tab_panels).elements
+    repeated = {
+        "Sensors",
+        "Health",
+        "Stream health",
+        "Calibration",
+        "Recording",
+        "Replay",
+    }
+    texts = [
+        label.text
+        for label in user.find(kind=ui.label).elements
+        if inside(label, panels)
+    ]
+    assert not repeated.intersection(texts)
+    # A heading that adds to its tab's name stays.
+    assert "Accuracy and calibration" in texts
+
+
+async def test_each_control_group_sits_in_its_own_tab(user: User) -> None:
+    page = await open_page(user, board_sources(replay=True, recording=True))
+    assert tab_names(user) == [
+        "sensors",
+        "health",
+        "calibration",
+        "recording",
+        "replay",
+    ]
+    expected: dict[str, list[ui.element]] = {
+        "sensors": [page.sensors, page.enable, page.disable],
+        "health": [page.health],
+        "calibration": [page.tare, page.calibrate, page.calget, page.calibration],
+        "recording": [page.record_start, page.record_stop],
+        "replay": [page.hold, page.restart, page.progress],
+    }
+    for name, elements in expected.items():
+        for element in elements:
+            assert tab_panel_of(user, element) == name
+
+
+async def test_the_recording_and_replay_tabs_need_their_sources(user: User) -> None:
+    await open_page(user, board_sources(replay=False, recording=False))
+    assert tab_names(user) == ["sensors", "health", "calibration"]
+
+
+async def test_only_the_recording_tab_needs_a_recording(user: User) -> None:
+    await open_page(user, board_sources(replay=False, recording=True))
+    assert tab_names(user) == ["sensors", "health", "calibration", "recording"]
+
+
+async def test_only_the_replay_tab_needs_a_replay(user: User) -> None:
+    await open_page(user, board_sources(replay=True, recording=False))
+    assert tab_names(user) == ["sensors", "health", "calibration", "replay"]
+
+
+@pytest.mark.parametrize(
+    ("board", "replay", "recording", "first"),
+    [
+        (True, False, False, "sensors"),
+        (True, False, True, "recording"),
+        (True, True, False, "replay"),
+        (True, True, True, "replay"),
+        (False, True, False, "replay"),
+        (False, True, True, "replay"),
+    ],
+)
+async def test_the_first_tab_shows_the_session_progress(
+    user: User,
+    board: bool,
+    replay: bool,
+    recording: bool,
+    first: str,
+) -> None:
+    sources = board_sources(replay=replay, recording=recording, board=board)
+    await open_page(user, sources)
+    (panels,) = user.find(kind=ui.tab_panels).elements
+    assert panels.value == first
+
+
+async def test_selecting_a_tab_reaches_its_controls(user: User) -> None:
+    commands = FakeCommands()
+    monitor = replayed()
+    sources = Sources(
+        label="board EXAMPLE-SERIAL",
+        status=lambda: Status(State.CONNECTED),
+        snapshot=monitor.snapshot,
+        history=monitor.history,
+        tick=lambda: None,
+        commands=commands.surface(),
+        replay=None,
+        recording=None,
+    )
+    page = await open_page(user, sources)
+    (panels,) = user.find(kind=ui.tab_panels).elements
+    user.find(kind=ui.tab, marker="tab-calibration").click()
+    assert panels.value == "calibration"
+    user.find(kind=ui.button, marker="tare").click()
+    assert commands.submitted == [tare(0x7, 0)]
+    user.find(kind=ui.tab, marker="tab-sensors").click()
+    assert panels.value == "sensors"
+    page.sensor_choice.value = 0x05
+    user.find(kind=ui.button, marker="enable").click()
+    assert commands.submitted[-1] == cfg(0x05, 10_000)

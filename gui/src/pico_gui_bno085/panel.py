@@ -551,25 +551,28 @@ class Page:
     def _build_tabs(self) -> None:
         """Build the tab panel of controls, one group visible at a time.
 
-        Sensors is the default because enabling a sensor is the first thing
-        a bench session needs: nothing else shows data until one reports.
-        The stream health table and the calibration controls follow; Recording
-        and Replay appear only with their sources.
+        Recording and Replay appear only with their sources. A replay's or a
+        recording's tab opens first so its progress is visible at once;
+        without either, Sensors opens first, because nothing shows data until
+        a sensor reports.
         """
         groups: list[tuple[str, str, Callable[[], None]]] = [
             ("Sensors", "sensors", self._build_sensors),
             ("Health", "health", self._build_health),
             ("Calibration", "calibration", self._build_calibration),
         ]
+        first = "sensors"
         if self._sources.recording is not None:
             groups.append(("Recording", "recording", self._build_recording))
+            first = "recording"
         if self._sources.replay is not None:
             groups.append(("Replay", "replay", self._build_replay))
+            first = "replay"
         with ui.column().classes("col-12 col-md-4"):
             with ui.tabs().classes("w-full") as tabs:
                 for label, name, _ in groups:
                     ui.tab(name, label).mark(f"tab-{name}")
-            with ui.tab_panels(tabs, value="sensors").classes("w-full"):
+            with ui.tab_panels(tabs, value=first).classes("w-full"):
                 for _, name, build in groups:
                     with ui.tab_panel(name):
                         build()
@@ -602,7 +605,6 @@ class Page:
 
     def _build_health(self) -> None:
         """Build the stream health table."""
-        ui.label("Stream health").classes("text-lg")
         self.health = ui.table(
             columns=HEALTH_COLUMNS,
             rows=[],
@@ -713,7 +715,6 @@ class Page:
 
     def _build_recording(self) -> None:
         """Build the record button and its state line."""
-        ui.label("Recording").classes("text-lg")
         self.recording_state = ui.label()
         with ui.row():
             self.record_start = self._any_control(
@@ -727,7 +728,6 @@ class Page:
 
     def _build_replay(self) -> None:
         """Build the replay progress and its hold and restart controls."""
-        ui.label("Replay").classes("text-lg")
         self.progress = ui.label()
         with ui.row():
             self.hold = self._any_control("Hold", self._hold_clicked).mark(

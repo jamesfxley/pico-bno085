@@ -796,8 +796,12 @@ def tab_names(user: User) -> list[str]:
     return [str(tab.props["name"]) for tab in tabs]
 
 
-def board_sources(replay: bool, recording: bool) -> Sources:
-    """Return sources with a board, and a replay and a recording if asked."""
+def board_sources(
+    replay: bool,
+    recording: bool,
+    board: bool = True,
+) -> Sources:
+    """Return sources with a board, a replay and a recording, as asked."""
     monitor = replayed()
     return Sources(
         label="board EXAMPLE-SERIAL",
@@ -805,7 +809,7 @@ def board_sources(replay: bool, recording: bool) -> Sources:
         snapshot=monitor.snapshot,
         history=monitor.history,
         tick=lambda: None,
-        commands=FakeCommands().surface(),
+        commands=FakeCommands().surface() if board else None,
         replay=FakeReplay().surface() if replay else None,
         recording=FakeRecording().surface() if recording else None,
     )
@@ -850,6 +854,27 @@ async def test_the_live_column_leads_the_tab_column(user: User) -> None:
     assert {"col-12", "col-md-4"} <= set(tabs.classes)
 
 
+async def test_no_tab_repeats_its_name_as_a_heading(user: User) -> None:
+    await open_page(user, board_sources(replay=True, recording=True))
+    (panels,) = user.find(kind=ui.tab_panels).elements
+    repeated = {
+        "Sensors",
+        "Health",
+        "Stream health",
+        "Calibration",
+        "Recording",
+        "Replay",
+    }
+    texts = [
+        label.text
+        for label in user.find(kind=ui.label).elements
+        if inside(label, panels)
+    ]
+    assert not repeated.intersection(texts)
+    # A heading that adds to its tab's name stays.
+    assert "Accuracy and calibration" in texts
+
+
 async def test_each_control_group_sits_in_its_own_tab(user: User) -> None:
     page = await open_page(user, board_sources(replay=True, recording=True))
     assert tab_names(user) == [
@@ -886,10 +911,28 @@ async def test_only_the_replay_tab_needs_a_replay(user: User) -> None:
     assert tab_names(user) == ["sensors", "health", "calibration", "replay"]
 
 
-async def test_the_sensors_tab_is_shown_first(user: User) -> None:
-    await open_page(user, board_sources(replay=True, recording=True))
+@pytest.mark.parametrize(
+    ("board", "replay", "recording", "first"),
+    [
+        (True, False, False, "sensors"),
+        (True, False, True, "recording"),
+        (True, True, False, "replay"),
+        (True, True, True, "replay"),
+        (False, True, False, "replay"),
+        (False, True, True, "replay"),
+    ],
+)
+async def test_the_first_tab_shows_the_session_progress(
+    user: User,
+    board: bool,
+    replay: bool,
+    recording: bool,
+    first: str,
+) -> None:
+    sources = board_sources(replay=replay, recording=recording, board=board)
+    await open_page(user, sources)
     (panels,) = user.find(kind=ui.tab_panels).elements
-    assert panels.value == "sensors"
+    assert panels.value == first
 
 
 async def test_selecting_a_tab_reaches_its_controls(user: User) -> None:

@@ -121,17 +121,18 @@ disabled and the line under the header says why.
 
 ## The panels
 
-The page has two columns. The live column, on the left, holds the
-connection bar, the command-path line with Retry, the two status lines, the
-board orientation view beside the Euler readouts, and the three motion plots
-in one row below them; it never changes with the controls. The controls sit
-in one tab panel on the right, one tab visible at a time: Sensors (the
-default), Health, Calibration, and Recording and Replay when the launcher
-gave `--record-dir` or `--replay`. In a window narrower than Quasar's
-medium breakpoint (1024 px) the tab panel falls below the live column, and
-the plots and the orientation view wrap onto separate lines when a row is
-too narrow for them. The layout uses NiceGUI's own elements and Quasar
-classes only.
+The page has two columns. The live column, on the left, holds the connection
+bar, the command-path line with Retry, the two status lines, the board
+orientation view beside the Euler readouts, and the three motion plots in
+one row below them; it never changes with the controls. The controls sit in
+one tab panel on the right, one tab visible at a time: Sensors, Health,
+Calibration, and Recording and Replay when the launcher gave `--record-dir`
+or `--replay`. The page opens on Replay when there is a replay, otherwise on
+Recording when there is a recording, and otherwise on Sensors. In a window
+narrower than Quasar's medium breakpoint (1024 px) the tab panel falls below
+the live column, and the plots and the orientation view wrap onto separate
+lines when a row is too narrow for them. The layout uses NiceGUI's own
+elements and Quasar classes only.
 
 The connection bar names the source and shows the session state, its line
 count and any line dropped for being too long. The line under the header

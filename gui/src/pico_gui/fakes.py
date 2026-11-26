@@ -6,6 +6,8 @@ from pico_tooling.device_proxy import Board
 
 from pico_gui.transport import Connection
 
+__all__ = ("FakeConnection", "FakeProxy")
+
 
 class FakeConnection:
     """A `Connection` that returns scripted chunks, then reports a closed stream."""

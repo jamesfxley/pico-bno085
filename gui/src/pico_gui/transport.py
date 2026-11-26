@@ -5,7 +5,9 @@ import contextlib
 import socket
 from typing import Protocol
 
-DEFAULT_POLL_SECONDS = 0.2
+_DEFAULT_POLL_SECONDS = 0.2
+
+__all__ = ("Connection", "SocketTransport", "Transport", "TransportError")
 
 
 class TransportError(Exception):
@@ -47,7 +49,7 @@ class SocketTransport:
     def __init__(
         self,
         connection: Connection,
-        poll_seconds: float = DEFAULT_POLL_SECONDS,
+        poll_seconds: float = _DEFAULT_POLL_SECONDS,
     ) -> None:
         self._connection = connection
         self._connection.settimeout(poll_seconds)

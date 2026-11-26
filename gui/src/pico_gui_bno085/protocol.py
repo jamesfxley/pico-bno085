@@ -11,15 +11,18 @@ from dataclasses import dataclass
 from enum import Enum
 
 # LP-1: a telemetry line or command response is at most 127 characters.
-TELEMETRY_LIMIT = 127
+_TELEMETRY_LIMIT = 127
 # LP-1: the words of the command responses of LP-7, which the limit covers.
-RESPONSE_WORDS = frozenset({"dcd", "cal", "resp"})
+_RESPONSE_WORDS = frozenset({"dcd", "cal", "resp"})
 # LP-1 sets no limit on any other reply. The `# stats` line runs past 600 characters.
 LINE_LIMIT = 2048
 
 SEQUENCE_MODULUS = 256
-BYTE_MAX = 255
-ACCURACY_MAX = 3
+# PR-3: two separately built event times differ by less than 400 µs, so an
+# event time that steps back by this much or more is a restart of the clock.
+RESTART_STEP_US = 400
+_BYTE_MAX = 255
+_ACCURACY_MAX = 3
 
 
 class ProtocolError(ValueError):
@@ -108,6 +111,22 @@ class RawResponse:
 
 Line = Telemetry | Reply | SaveDcdStatus | CalibrationStatus | RawResponse
 
+__all__ = (
+    "LINE_LIMIT",
+    "RESTART_STEP_US",
+    "SEQUENCE_MODULUS",
+    "VALUE_NAMES",
+    "CalibrationStatus",
+    "Kind",
+    "Line",
+    "ProtocolError",
+    "RawResponse",
+    "Reply",
+    "SaveDcdStatus",
+    "Telemetry",
+    "parse_line",
+)
+
 _UNSIGNED = re.compile(r"[0-9]+")
 # LP-6: five digits after the point, no exponent, no plus sign, and a magnitude
 # below 1e9, so at most nine digits before the point. Otherwise `nan`.
@@ -128,9 +147,9 @@ def parse_line(text: str) -> Line:
 
 
 def _parse_telemetry(kind: Kind, text: str) -> Telemetry:
-    if len(text) > TELEMETRY_LIMIT:
+    if len(text) > _TELEMETRY_LIMIT:
         raise ProtocolError(
-            f"telemetry line is longer than {TELEMETRY_LIMIT} characters (LP-1)",
+            f"telemetry line is longer than {_TELEMETRY_LIMIT} characters (LP-1)",
         )
     fields = text.split(",")[1:]
     names = VALUE_NAMES[kind]
@@ -138,10 +157,10 @@ def _parse_telemetry(kind: Kind, text: str) -> Telemetry:
         raise ProtocolError(
             f"{kind.value} line has {len(fields)} fields, expected {4 + len(names)}",
         )
-    sensor = _unsigned(fields[0], "sensor", BYTE_MAX)
-    seq = _unsigned(fields[1], "sequence", BYTE_MAX)
+    sensor = _unsigned(fields[0], "sensor", _BYTE_MAX)
+    seq = _unsigned(fields[1], "sequence", _BYTE_MAX)
     time_us = _unsigned(fields[2], "time", None)
-    accuracy = _unsigned(fields[3], "accuracy", ACCURACY_MAX)
+    accuracy = _unsigned(fields[3], "accuracy", _ACCURACY_MAX)
     values = tuple(
         _number(field, name) for field, name in zip(fields[4:], names, strict=True)
     )
@@ -171,9 +190,9 @@ def _number(field: str, name: str) -> float:
 
 def _parse_reply(body: str, length: int) -> Line:
     tokens = body.split(" ")
-    if tokens[0] in RESPONSE_WORDS and length > TELEMETRY_LIMIT:
+    if tokens[0] in _RESPONSE_WORDS and length > _TELEMETRY_LIMIT:
         raise ProtocolError(
-            f"# {tokens[0]} line is longer than {TELEMETRY_LIMIT} characters (LP-1)",
+            f"# {tokens[0]} line is longer than {_TELEMETRY_LIMIT} characters (LP-1)",
         )
     if not body or "" in tokens:
         raise ProtocolError("reply has an empty word")
@@ -200,7 +219,7 @@ def _parse_reply(body: str, length: int) -> Line:
 
 
 def _byte(fields: Mapping[str, str], key: str) -> int:
-    return _unsigned(fields[key], key, BYTE_MAX)
+    return _unsigned(fields[key], key, _BYTE_MAX)
 
 
 def _expect_keys(

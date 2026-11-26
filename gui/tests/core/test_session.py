@@ -5,7 +5,7 @@ from pathlib import Path
 
 import pytest
 
-from pico_gui.recorder import Recorder
+from pico_gui.recorder import Recorder, RecorderSlot
 from pico_gui.replay import ReplayTransport
 from pico_gui.session import Session, State, Status
 from pico_gui.transport import TransportError
@@ -119,6 +119,29 @@ def test_a_defect_in_the_callback_propagates_and_marks_the_session_failed() -> N
     assert "unexpectedly" in session.status.detail
 
 
+def test_a_recorder_attached_mid_session_records_from_there(
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / "out.txt"
+    slot = RecorderSlot()
+
+    def attach_on_first(line: str, _now: float) -> None:
+        if line == "a":
+            slot.attach(Recorder.open(path))
+
+    session = Session(
+        ScriptedTransport([b"a\n", b"b\n"]),
+        attach_on_first,
+        clock=lambda: 0.0,
+        recorder=slot,
+    )
+    session.run()
+    assert path.read_bytes() == b"b\n"
+    detached = slot.detach()
+    assert detached is not None
+    detached.close()
+
+
 def test_a_session_starts_once() -> None:
     session = Session(ScriptedTransport([]), Collector(), clock=lambda: 0.0)
     session.start()
@@ -130,15 +153,65 @@ def test_a_session_starts_once() -> None:
 def test_a_replay_is_recorded_line_for_line(tmp_path: Path) -> None:
     data = b"# ready\nQ,5,0,1,3,0.00000,0.00000,0.00000,1.00000,0.50000\n"
     path = tmp_path / "copy.txt"
+    slot = RecorderSlot(Recorder.open(path))
     session = Session(
         ReplayTransport(io.BytesIO(data)),
         Collector(),
         clock=lambda: 0.0,
-        recorder=Recorder.open(path),
+        recorder=slot,
     )
     session.start()
     session.wait(WAIT_SECONDS)
+    # The session leaves the slot attached; its owner closes the recorder.
     assert path.read_bytes() == data
+    detached = slot.detach()
+    assert detached is not None
+    detached.close()
+
+
+def test_a_recording_survives_the_end_of_the_stream(tmp_path: Path) -> None:
+    path = tmp_path / "out.txt"
+    slot = RecorderSlot(Recorder.open(path))
+    session = Session(
+        ReplayTransport(io.BytesIO(b"a\n")),
+        Collector(),
+        clock=lambda: 0.0,
+        recorder=slot,
+    )
+    session.start()
+    session.wait(WAIT_SECONDS)
+    # The stream has ended and the recorder is still attached, so a later
+    # session can keep writing the same recording.
+    assert slot.attached
+    detached = slot.detach()
+    assert detached is not None
+    detached.close()
+
+
+def test_stop_ends_a_session_whose_reader_is_inside_the_line_callback() -> None:
+    entered = threading.Event()
+    release = threading.Event()
+
+    def blocking(_line: str, _now: float) -> None:
+        entered.set()
+        assert release.wait(WAIT_SECONDS)
+
+    session = Session(
+        ScriptedTransport([b"a\n"], quiet=True),
+        blocking,
+        clock=lambda: 0.0,
+    )
+    session.start()
+    assert entered.wait(WAIT_SECONDS)
+    # The reader is inside the line callback; stop waits for it to return
+    # rather than ending the session underneath it.
+    stopper = threading.Thread(target=session.stop)
+    stopper.start()
+    assert stopper.is_alive()
+    release.set()
+    stopper.join(WAIT_SECONDS)
+    assert not stopper.is_alive()
+    assert session.status.state is State.ENDED
 
 
 def test_a_failed_recording_write_is_the_status() -> None:
@@ -146,22 +219,9 @@ def test_a_failed_recording_write_is_the_status() -> None:
         ScriptedTransport([b"a\n"]),
         Collector(),
         clock=lambda: 0.0,
-        recorder=Recorder(FailingStream(fail_write=True)),
+        recorder=RecorderSlot(Recorder(FailingStream(fail_write=True))),
     )
     session.start()
     session.wait(WAIT_SECONDS)
     assert session.status.state is State.FAILED
     assert "no space left on device" in session.status.detail
-
-
-def test_a_failed_recording_close_is_the_status() -> None:
-    session = Session(
-        ScriptedTransport([b"a\n"]),
-        Collector(),
-        clock=lambda: 0.0,
-        recorder=Recorder(FailingStream(fail_close=True)),
-    )
-    session.start()
-    session.wait(WAIT_SECONDS)
-    assert session.status.state is State.FAILED
-    assert "input/output error" in session.status.detail

@@ -15,6 +15,15 @@ from pico_tooling.device_proxy import Board, Proxy, find_connection
 
 from pico_gui.transport import Connection, SocketTransport, TransportError
 
+__all__ = (
+    "CONSOLE_BAUD",
+    "ProxyClient",
+    "ProxyFactory",
+    "choose_port",
+    "connect_proxy",
+    "open_device",
+)
+
 CONSOLE_BAUD = 115200
 
 

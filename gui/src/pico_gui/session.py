@@ -7,11 +7,13 @@ from dataclasses import dataclass
 from enum import Enum
 
 from pico_gui.framing import DEFAULT_LINE_LIMIT, LineFramer
-from pico_gui.recorder import Recorder
+from pico_gui.recorder import RecorderSlot
 from pico_gui.transport import Transport, TransportError
 
-CHUNK_BYTES = 4096
-JOIN_SECONDS = 5.0
+_CHUNK_BYTES = 4096
+_JOIN_SECONDS = 5.0
+
+__all__ = ("Session", "State", "Status")
 
 
 class State(Enum):
@@ -37,7 +39,10 @@ class Session:
     """Frame a transport's bytes and pass each line, with its arrival time, on.
 
     `on_line` runs on the reader thread. `status` is safe to read from any
-    thread.
+    thread. Recording goes through a `RecorderSlot`, which the reader thread
+    writes and another thread may attach to or detach from; the session
+    leaves the recorder attached when the stream ends, and whoever owns the
+    slot closes the recorder.
     """
 
     def __init__(
@@ -46,7 +51,7 @@ class Session:
         on_line: Callable[[str, float], None],
         *,
         clock: Callable[[], float],
-        recorder: Recorder | None = None,
+        recorder: RecorderSlot | None = None,
         line_limit: int = DEFAULT_LINE_LIMIT,
     ) -> None:
         self._transport = transport
@@ -71,10 +76,10 @@ class Session:
         self._thread.start()
 
     def stop(self) -> None:
-        """Stop reading, close the transport and the recording, and wait."""
+        """Stop reading, close the transport, and wait."""
         self._stop.set()
         self._transport.close()
-        self.wait(JOIN_SECONDS)
+        self.wait(_JOIN_SECONDS)
 
     def wait(self, timeout: float | None = None) -> None:
         """Wait for the reader thread to finish, at most `timeout` seconds."""
@@ -103,23 +108,13 @@ class Session:
         else:
             self._set(State.ENDED)
         finally:
-            self._close_recorder()
             if self._status.state is State.CONNECTED:
                 self._set(State.FAILED, "the reader stopped unexpectedly")
-
-    def _close_recorder(self) -> None:
-        if self._recorder is None:
-            return
-        try:
-            self._recorder.close()
-        except TransportError as error:
-            if self._status.state is not State.FAILED:
-                self._set(State.FAILED, str(error))
 
     def _pump(self) -> None:
         while not self._stop.is_set():
             try:
-                data = self._transport.recv(CHUNK_BYTES)
+                data = self._transport.recv(_CHUNK_BYTES)
             except TimeoutError:
                 continue
             if not data:

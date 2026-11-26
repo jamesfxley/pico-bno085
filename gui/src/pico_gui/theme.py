@@ -5,7 +5,7 @@ from nicegui import ui
 
 from pico_gui.session import State
 
-PRIMARY = "#3b82f6"
+_PRIMARY = "#3b82f6"
 STATE_COLOURS = {
     State.IDLE: "grey",
     State.CONNECTED: "positive",
@@ -13,8 +13,10 @@ STATE_COLOURS = {
     State.FAILED: "negative",
 }
 
+__all__ = ("STATE_COLOURS", "apply_theme")
+
 
 def apply_theme() -> None:
     """Set the dark scheme and the accent colour for the current page."""
     ui.dark_mode(value=True)
-    ui.colors(primary=PRIMARY)
+    ui.colors(primary=_PRIMARY)

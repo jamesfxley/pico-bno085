@@ -114,7 +114,7 @@ run.
 Every command line is validated before it is sent: ASCII, at most 64
 characters, ending in one line feed (LP-1). An interval or a duration the
 bench's parser would refuse, one above the unsigned 32-bit range, is refused
-on the host and noted below the tables.
+on the host and noted in the second status line.
 
 A recording has no board to command. In a replay every command control is
 disabled and the line under the header says why.
@@ -199,17 +199,17 @@ readouts and the tables follow the page refresh, at most 30 times a second; a
 table, the board's rotation and every text are sent to the browser only when
 their content changed since the last refresh.
 
-The Health tab shows the stream health table: per sensor over a rolling
-two-second window of event time: the delivered rate, the missing and the
-repeated report counts, the timestamp inversions, the worst backward step, the
-clock faults and the 99th-percentile jitter as a fraction of the nominal
+The Health tab shows the stream health table. For each sensor, over a rolling
+two-second window of event time, it gives the delivered rate, the missing and
+the repeated report counts, the timestamp inversions, the worst backward step,
+the clock faults and the 99th-percentile jitter as a fraction of the nominal
 interval. The rate comes from the event times the lines carry, so a burst of
 lines in one USB chunk leaves it unchanged. The nominal interval is the
 commanded one when this session sent `cfg` for that sensor, and otherwise the
 median observed interval; the table's last column states which basis was used.
-The G line's sequence is a placeholder, so it is left out of the gap counts, and
-nothing is compared across a `# ready` or `# run` boundary, where the hub's
-counters may have reset.
+The G line's sequence is a placeholder, so it is left out of the gap counts,
+and nothing is compared across a `# ready` or `# run` boundary, where the
+hub's counters may have reset.
 
 The Calibration tab shows the last `# cal` response decoded
 per LP-7, with the status and each routine's state, and the last command

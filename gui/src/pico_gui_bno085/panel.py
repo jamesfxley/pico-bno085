@@ -109,6 +109,11 @@ _BOARD_AXES = (
     ((0.0, 0.0, 1.0), "Z", "#3498db"),
 )
 _BOARD_COLOUR = "#5b6770"
+_SCENE_WIDTH_PX = 340
+# A card pads its content on both sides by NiceGUI's default padding.
+_ORIENTATION_CARD_STYLE = (
+    f"min-width: calc({_SCENE_WIDTH_PX}px + 2 * var(--nicegui-default-padding))"
+)
 
 __all__ = (
     "ACCURACY_NAMES",
@@ -606,7 +611,9 @@ class Page:
 
     def _build_orientation(self) -> None:
         """Build the board view, its source select and the lines beside it."""
-        with ui.card().classes("col"):
+        # The scene has a fixed pixel width, so the card keeps room for it and
+        # the row wraps instead of letting the scene overlap the Euler card.
+        with ui.card().classes("col").style(_ORIENTATION_CARD_STYLE):
             ui.label("Board orientation").classes("text-lg")
             with ui.row().classes("items-center"):
                 self.rotation_choice = ui.select(
@@ -634,7 +641,10 @@ class Page:
         Z, so the board drawn flat shows its front face up. `rotate_R`'s
         matrix becomes the object's own rotation (`scene.js:29-35`).
         """
-        with ui.scene(width=340, height=280) as scene, scene.group() as self.board:
+        with (
+            ui.scene(width=_SCENE_WIDTH_PX, height=280) as scene,
+            scene.group() as self.board,
+        ):
             scene.box(2.0, 3.0, 0.3).material(_BOARD_COLOUR)
             for tip, name, colour in _BOARD_AXES:
                 scene.line([0.0, 0.0, 0.0], list(tip)).material(colour)

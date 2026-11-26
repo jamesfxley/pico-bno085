@@ -757,13 +757,29 @@ def inside(element: ui.element, container: ui.element) -> bool:
 
 
 def parent_row(element: ui.element) -> ui.element:
-    """Return the row that holds the card around `element`."""
+    """Return the parent of the card around `element`."""
+    card = card_of(element)
+    assert card.parent_slot is not None
+    return card.parent_slot.parent
+
+
+def card_of(element: ui.element) -> ui.card:
+    """Return the card around `element`."""
     current = element
     while not isinstance(current, ui.card):
         assert current.parent_slot is not None
         current = current.parent_slot.parent
-    assert current.parent_slot is not None
-    return current.parent_slot.parent
+    return current
+
+
+def column_of(element: ui.element) -> ui.column:
+    """Return the nearest column around `element`, excluding itself."""
+    assert element.parent_slot is not None
+    current = element.parent_slot.parent
+    while not isinstance(current, ui.column):
+        assert current.parent_slot is not None
+        current = current.parent_slot.parent
+    return current
 
 
 def tab_panel_of(user: User, element: ui.element) -> str | None:
@@ -813,6 +829,25 @@ async def test_the_live_views_stay_outside_the_tabs(user: User) -> None:
     plots = [parent_row(chart) for chart in page.motion.values()]
     assert plots[0] is plots[1] is plots[2]
     assert plots[0] is not parent_row(page.euler)
+    # The orientation card keeps room for the fixed-width scene, so its row
+    # wraps rather than overlapping the Euler card.
+    (scene,) = user.find(kind=ui.scene).elements
+    width = card_of(scene).style["min-width"]
+    assert width.startswith(f"calc({scene.props['width']}px + ")
+
+
+async def test_the_live_column_leads_the_tab_column(user: User) -> None:
+    page = await open_page(user, board_sources(replay=True, recording=True))
+    (panels,) = user.find(kind=ui.tab_panels).elements
+    live = column_of(page.controller)
+    tabs = column_of(panels)
+    assert live.parent_slot is not None
+    assert tabs.parent_slot is not None
+    assert live.parent_slot is tabs.parent_slot
+    children = live.parent_slot.children
+    assert children.index(live) < children.index(tabs)
+    assert {"col-12", "col-md"} <= set(live.classes)
+    assert {"col-12", "col-md-4"} <= set(tabs.classes)
 
 
 async def test_each_control_group_sits_in_its_own_tab(user: User) -> None:

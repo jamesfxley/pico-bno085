@@ -9,6 +9,14 @@ from pico_gui.theme import STATE_COLOURS
 REFRESH_HZ = 30
 REFRESH_INTERVAL_SECONDS = 1 / REFRESH_HZ
 
+__all__ = (
+    "REFRESH_HZ",
+    "REFRESH_INTERVAL_SECONDS",
+    "ConnectionBar",
+    "StatusLine",
+    "describe",
+)
+
 
 def describe(status: Status) -> str:
     """Return the connection state as one line of text."""

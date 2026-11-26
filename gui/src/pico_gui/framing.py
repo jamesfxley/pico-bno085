@@ -7,6 +7,8 @@ DEFAULT_LINE_LIMIT = 2048
 
 _TERMINATOR = re.compile(rb"[\r\n]")
 
+__all__ = ("DEFAULT_LINE_LIMIT", "LineFramer")
+
 
 class LineFramer:
     """Collect bytes and return each complete line as text.

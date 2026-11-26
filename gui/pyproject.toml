@@ -13,7 +13,7 @@ dependencies = [
 ]
 
 [dependency-groups]
-dev = ["pytest==9.2.0", "mypy==2.4.1"]
+dev = ["pytest==9.2.0", "mypy==2.4.1", "pytest-asyncio==1.5.0"]
 
 [tool.uv]
 default-groups = ["dev"]
@@ -26,6 +26,11 @@ strict = true
 testpaths = ["tests"]
 addopts = ["-ra"]
 filterwarnings = ["error"]
+# NiceGUI's headless user fixture runs the page builders of each test; this
+# project's page is built by the test, so no main file is imported.
+main_file = ""
+asyncio_mode = "auto"
+asyncio_default_fixture_loop_scope = "function"
 
 [tool.mypy]
 python_version = "3.11"

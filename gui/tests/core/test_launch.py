@@ -45,8 +45,8 @@ def test_the_steps_name_the_exact_port_and_the_documented_actions() -> None:
     assert "Command Palette (F1)" in text
     assert "Ports view" not in text
     assert "'Forward a Port'" in text
-    assert "http://localhost:9100" in text
-    assert "VS Code may report a\n     different local port" in text
+    assert "notification will tell you the localhost port" in text
+    assert "for example http://localhost:4123" in text
     assert "temporary forward lasts for the duration of the VS Code session" in text
     assert "Ctrl+C" in text
 
@@ -55,6 +55,8 @@ def test_the_steps_state_nothing_that_the_documentation_does_not() -> None:
     text = forwarding_steps(8080)
     assert "UNCONFIRMED" not in text
     assert "remove" not in text.lower()
+    # The page names no default local port, so the steps do not.
+    assert "by default" not in text
 
 
 def test_the_shutdown_message_is_plain() -> None:

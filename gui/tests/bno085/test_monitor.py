@@ -11,16 +11,25 @@ WAIT_SECONDS = 5.0
 
 
 def test_a_parsed_line_reaches_the_model_and_a_refused_one_is_counted() -> None:
-    monitor = Monitor(lambda: 1.0)
+    monitor = Monitor()
     monitor.on_line("E,5,0,100,3", 1.0)
     monitor.on_line("not a protocol line", 1.0)
     snapshot = monitor.snapshot()
-    assert snapshot.sensors[0].count == 1
+    assert snapshot.sensors[0].figures.count == 1
     assert snapshot.rejected == 1
 
 
+def test_the_commanded_intervals_reach_the_figures() -> None:
+    monitor = Monitor()
+    monitor.on_line("E,5,0,0,3", 0.0)
+    monitor.on_line("E,5,1,5000,3", 0.0)
+    figures = monitor.snapshot({5: 10_000}).sensors[0].figures
+    assert figures.nominal_is_commanded
+    assert not monitor.snapshot().sensors[0].figures.nominal_is_commanded
+
+
 def test_a_recorded_session_replays_into_the_model() -> None:
-    monitor = Monitor(lambda: 0.0)
+    monitor = Monitor()
     session = Session(
         ReplayTransport(io.BytesIO(DATA.read_bytes())),
         monitor.on_line,
@@ -48,6 +57,6 @@ def test_a_recorded_session_replays_into_the_model() -> None:
     ]
     by_sensor = {stats.sensor: stats for stats in snapshot.sensors}
     # The GIRV report has no sequence field, so its line is not a gap source.
-    assert by_sensor[42].missing == 0
-    assert by_sensor[42].count > 1
+    assert by_sensor[42].figures.missing == 0
+    assert by_sensor[42].figures.count > 1
     assert snapshot.replies >= 8

@@ -13,8 +13,21 @@ from nicegui import server as nicegui_server
 
 DEFAULT_HOST = "127.0.0.1"
 DEFAULT_PORT = 8080
-MAX_PORT = 65535
-POLL_SECONDS = 0.05
+_MAX_PORT = 65535
+_POLL_SECONDS = 0.05
+
+__all__ = (
+    "DEFAULT_HOST",
+    "DEFAULT_PORT",
+    "Server",
+    "add_server_arguments",
+    "announce_when_started",
+    "bind_failure_message",
+    "forwarding_steps",
+    "port_number",
+    "run",
+    "shutdown_message",
+)
 
 
 @dataclass(frozen=True)
@@ -31,8 +44,8 @@ def port_number(text: str) -> int:
         port = int(text)
     except ValueError:
         raise argparse.ArgumentTypeError(f"{text!r} is not a port number") from None
-    if not 1 <= port <= MAX_PORT:
-        raise argparse.ArgumentTypeError(f"{port} is not between 1 and {MAX_PORT}")
+    if not 1 <= port <= _MAX_PORT:
+        raise argparse.ArgumentTypeError(f"{port} is not between 1 and {_MAX_PORT}")
     return port
 
 
@@ -55,16 +68,21 @@ def forwarding_steps(port: int) -> str:
     """Return the steps that let the Windows browser reach `port`.
 
     Source: the Dev Containers documentation, "Forwarding or publishing a
-    port". It does not describe stopping a forward before the VS Code session
-    ends, so the text does not.
+    port". It names the notification that follows the Forward a Port
+    command, gives `http://localhost:4123` as the example of the address
+    to open, and states that a temporary forward lasts for the duration
+    of the session. It names no default local port, so the text does
+    not. It does not describe stopping a forward before the VS Code
+    session ends, so the text does not.
     """
     return (
         f"The GUI server is listening on port {port}. To open it in the browser\n"
         f"on the host, forward the port in VS Code:\n"
         f"  1. Run 'Forward a Port' from the Command Palette (F1) and enter\n"
-        f"     {port}.\n"
-        f"  2. Open http://localhost:{port} in the browser. VS Code may report a\n"
-        f"     different local port; if it does, use that one.\n"
+        f"     {port}. A notification will tell you the localhost port you\n"
+        f"     should use.\n"
+        f"  2. Open the localhost port the notification names in the browser,\n"
+        f"     for example http://localhost:4123.\n"
         f"A temporary forward lasts for the duration of the VS Code session.\n"
         f"Press Ctrl+C here to stop the server."
     )
@@ -89,7 +107,7 @@ def announce_when_started(
     say: Callable[[str], None],
     port: int,
     *,
-    poll_seconds: float = POLL_SECONDS,
+    poll_seconds: float = _POLL_SECONDS,
 ) -> None:
     """Say how to reach `port` once `started` is true, checking on `loop`.
 
@@ -111,11 +129,12 @@ def announce_when_started(
 def run(
     title: str,
     server: Server,
-    build_page: Callable[[], None],
+    build_page: Callable[[], object],
     on_shutdown: Callable[[], None],
 ) -> None:
     """Serve `build_page` at `/` until interrupted, then run `on_shutdown`.
 
+    The page builder runs once per client and its return value is ignored.
     The forwarding steps go to standard output once the server has bound its
     port. Ctrl+C stops the server cleanly. A port that cannot be bound is
     reported on standard error and the exit status is non-zero.
